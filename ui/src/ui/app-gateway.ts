@@ -142,9 +142,17 @@ type GatewayHostWithSideResults = GatewayHost & {
   chatSideResultTerminalRuns?: Set<string>;
 };
 
+type SessionMessagePayload = {
+  sessionKey?: string;
+  message?: unknown;
+  messageId?: unknown;
+  messageSeq?: unknown;
+};
+
 const SESSIONS_CHANGED_RELOAD_DEBOUNCE_MS = 5_000;
 const DEFERRED_SESSION_MESSAGE_REPLAY_POLL_MS = 250;
 const DEFERRED_SESSION_MESSAGE_REPLAY_TIMEOUT_MS = 10_000;
+const SESSION_MESSAGE_DEDUPE_KEY = "__openclawSessionMessageKey";
 
 function enqueueApprovalRequest(host: GatewayHost, entry: ExecApprovalRequest | null) {
   if (!entry) {
@@ -795,14 +803,18 @@ function handleChatGatewayEvent(host: GatewayHost, payload: ChatEventPayload | u
 
 function handleSessionMessageGatewayEvent(
   host: GatewayHost,
-  payload: { sessionKey?: string } | undefined,
+  payload: SessionMessagePayload | undefined,
 ) {
   applySessionsChangedEvent(host as unknown as SessionsState, payload);
   const deferredReloadHost = host as GatewayHostWithDeferredSessionMessageReload;
+  if (!payload) {
+    return;
+  }
   const sessionKey = payload?.sessionKey?.trim();
   if (!sessionKey || sessionKey !== host.sessionKey) {
     return;
   }
+  const appendedLiveMessage = appendLiveSessionMessage(host, payload);
   // Skip history reload while a chat run is active. The chat event handler
   // manages streaming state and appends the final assistant message. Reloading
   // history mid-run races with the optimistic user-message update and resets
@@ -819,8 +831,134 @@ function handleSessionMessageGatewayEvent(
     );
     return;
   }
+  if (appendedLiveMessage) {
+    deferredReloadHost.pendingSessionMessageReloadSessionKey = null;
+    return;
+  }
   deferredReloadHost.pendingSessionMessageReloadSessionKey = null;
   void loadChatHistory(host as unknown as ChatState);
+}
+
+function appendLiveSessionMessage(host: GatewayHost, payload: SessionMessagePayload): boolean {
+  const message = payload.message;
+  if (!isRecord(message)) {
+    return false;
+  }
+  if (typeof message.role !== "string" || message.role.toLowerCase() !== "user") {
+    return false;
+  }
+  const chatState = host as unknown as ChatState & { chatMessages?: unknown[] };
+  const currentMessages = Array.isArray(chatState.chatMessages) ? chatState.chatMessages : [];
+  const key = buildSessionMessageDedupeKey(payload);
+  if (key && currentMessages.some((entry) => sessionMessageMatchesKey(entry, key))) {
+    return true;
+  }
+  const duplicateSignature = buildSessionMessageContentSignature(message);
+  if (
+    duplicateSignature &&
+    currentMessages.some(
+      (entry) => buildSessionMessageContentSignature(entry) === duplicateSignature,
+    )
+  ) {
+    return true;
+  }
+  const optimisticSignature = buildSessionMessageOptimisticSignature(message);
+  if (
+    host.chatRunId &&
+    optimisticSignature &&
+    currentMessages
+      .slice(-3)
+      .some((entry) => buildSessionMessageOptimisticSignature(entry) === optimisticSignature)
+  ) {
+    return true;
+  }
+  chatState.chatMessages = [
+    ...currentMessages,
+    key ? { ...message, [SESSION_MESSAGE_DEDUPE_KEY]: key } : message,
+  ];
+  return true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function buildSessionMessageDedupeKey(payload: SessionMessagePayload): string | null {
+  const message = isRecord(payload.message) ? payload.message : undefined;
+  const messageId =
+    typeof payload.messageId === "string" && payload.messageId.trim()
+      ? payload.messageId.trim()
+      : typeof message?.id === "string" && message.id.trim()
+        ? message.id.trim()
+        : null;
+  if (messageId) {
+    return `id:${messageId}`;
+  }
+  const seq =
+    typeof payload.messageSeq === "number" && Number.isSafeInteger(payload.messageSeq)
+      ? payload.messageSeq
+      : typeof message?.seq === "number" && Number.isSafeInteger(message.seq)
+        ? message.seq
+        : null;
+  return seq !== null ? `seq:${seq}` : null;
+}
+
+function sessionMessageMatchesKey(entry: unknown, key: string): boolean {
+  if (!isRecord(entry)) {
+    return false;
+  }
+  if (entry[SESSION_MESSAGE_DEDUPE_KEY] === key) {
+    return true;
+  }
+  if (key.startsWith("id:") && typeof entry.id === "string" && `id:${entry.id.trim()}` === key) {
+    return true;
+  }
+  if (
+    key.startsWith("seq:") &&
+    typeof entry.seq === "number" &&
+    Number.isSafeInteger(entry.seq) &&
+    `seq:${entry.seq}` === key
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function buildSessionMessageContentSignature(message: unknown): string | null {
+  if (!isRecord(message)) {
+    return null;
+  }
+  const role = typeof message.role === "string" ? message.role.toLowerCase() : "";
+  if (!role) {
+    return null;
+  }
+  const timestamp =
+    typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+      ? message.timestamp
+      : null;
+  if (timestamp === null) {
+    return null;
+  }
+  try {
+    return JSON.stringify([role, message.content ?? null, message.text ?? null, timestamp]);
+  } catch {
+    return null;
+  }
+}
+
+function buildSessionMessageOptimisticSignature(message: unknown): string | null {
+  if (!isRecord(message)) {
+    return null;
+  }
+  const role = typeof message.role === "string" ? message.role.toLowerCase() : "";
+  if (role !== "user") {
+    return null;
+  }
+  try {
+    return JSON.stringify([role, message.content ?? null, message.text ?? null]);
+  } catch {
+    return null;
+  }
 }
 
 function replayDeferredSessionMessageReloadAfterSessionsRefresh(
@@ -899,7 +1037,7 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
   }
 
   if (evt.event === "session.message") {
-    handleSessionMessageGatewayEvent(host, evt.payload as { sessionKey?: string } | undefined);
+    handleSessionMessageGatewayEvent(host, evt.payload as SessionMessagePayload | undefined);
     return;
   }
 

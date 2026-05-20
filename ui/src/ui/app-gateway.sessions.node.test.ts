@@ -79,7 +79,13 @@ afterAll(() => {
   vi.resetModules();
 });
 
-function createHost() {
+type TestGatewayHost = Parameters<typeof handleGatewayEvent>[0] & {
+  chatMessages: unknown[];
+  chatRunId: string | null;
+  sessionsLoading?: boolean;
+};
+
+function createHost(): TestGatewayHost {
   return {
     settings: {
       gatewayUrl: "ws://127.0.0.1:18789",
@@ -125,13 +131,14 @@ function createHost() {
     assistantAgentId: null,
     serverVersion: null,
     sessionKey: "main",
+    chatMessages: [],
     chatRunId: null,
     toolStreamOrder: [],
     refreshSessionsAfterChat: new Set<string>(),
     execApprovalQueue: [],
     execApprovalError: null,
     updateAvailable: null,
-  } as unknown as Parameters<typeof handleGatewayEvent>[0];
+  } as unknown as TestGatewayHost;
 }
 
 describe("handleGatewayEvent sessions.changed", () => {
@@ -360,6 +367,100 @@ describe("handleGatewayEvent sessions.changed", () => {
 });
 
 describe("handleGatewayEvent session.message", () => {
+  it("appends user transcript messages for the active session immediately", () => {
+    loadChatHistoryMock.mockReset();
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+    const message = {
+      id: "msg-user-1",
+      seq: 12,
+      role: "user",
+      content: [{ type: "text", text: "open netflix" }],
+      timestamp: 123,
+    };
+
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message,
+        messageId: "msg-user-1",
+        messageSeq: 12,
+      },
+      seq: 1,
+    });
+
+    expect(host.chatMessages).toHaveLength(1);
+    expect(host.chatMessages[0]).toMatchObject(message);
+    expect(loadChatHistoryMock).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates repeated user transcript messages", () => {
+    loadChatHistoryMock.mockReset();
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+    const payload = {
+      sessionKey: "agent:qa:main",
+      message: {
+        id: "msg-user-2",
+        seq: 13,
+        role: "user",
+        content: [{ type: "text", text: "again" }],
+        timestamp: 456,
+      },
+      messageId: "msg-user-2",
+      messageSeq: 13,
+    };
+
+    handleGatewayEvent(host, { type: "event", event: "session.message", payload, seq: 1 });
+    handleGatewayEvent(host, { type: "event", event: "session.message", payload, seq: 2 });
+
+    expect(host.chatMessages).toHaveLength(1);
+    expect(loadChatHistoryMock).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate the sender optimistic user message during an active run", () => {
+    loadChatHistoryMock.mockReset();
+    loadSessionsMock.mockReset().mockResolvedValue(undefined);
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+    host.chatRunId = "run-123";
+    host.chatMessages = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "open netflix" }],
+        timestamp: 100,
+      },
+    ];
+
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message: {
+          id: "msg-user-3",
+          seq: 14,
+          role: "user",
+          content: [{ type: "text", text: "open netflix" }],
+          timestamp: 200,
+        },
+        messageId: "msg-user-3",
+        messageSeq: 14,
+      },
+      seq: 1,
+    });
+
+    expect(host.chatMessages).toHaveLength(1);
+    expect(loadChatHistoryMock).not.toHaveBeenCalled();
+    expect(loadSessionsMock).toHaveBeenCalledWith(host, {
+      activeMinutes: 10,
+      agentId: "qa",
+      limit: 25,
+    });
+  });
+
   it("reloads chat history for the active session", () => {
     loadChatHistoryMock.mockReset();
     const host = createHost();
