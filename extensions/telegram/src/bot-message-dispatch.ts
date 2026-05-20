@@ -595,15 +595,18 @@ export const dispatchTelegramMessage = async ({
   const progressDraftGate = createChannelProgressDraftGate({
     onStart: () => renderProgressDraft({ flush: true }),
   });
+  let sendStandaloneToolProgress: ((text: string) => Promise<boolean>) | undefined;
   const pushStreamToolProgress = async (
     line?: string | ChannelProgressDraftLine,
     options?: { toolName?: string; startImmediately?: boolean },
   ) => {
-    // Keep Telegram progress visible as durable dispatch messages instead of
-    // editing the live answer draft. This preserves the 5.3-style chat history
-    // when verbose progress is enabled.
-    void line;
+    const rawText = typeof line === "string" ? line : line?.text;
+    const text = rawText?.replace(/\s+/g, " ").trim();
+    if (!text) {
+      return;
+    }
     void options;
+    await sendStandaloneToolProgress?.(text);
   };
   let splitReasoningOnNextStream = false;
   let draftLaneEventQueue = Promise.resolve();
@@ -1064,6 +1067,7 @@ export const dispatchTelegramMessage = async ({
       }
       return result.delivered;
     };
+    sendStandaloneToolProgress = (text: string) => sendPayload({ text });
     const emitPreviewFinalizedHook = (result: LaneDeliveryResult) => {
       if (isDispatchSuperseded() || result.kind !== "preview-finalized") {
         return;
