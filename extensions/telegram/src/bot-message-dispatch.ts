@@ -21,11 +21,7 @@ import {
   formatChannelProgressDraftLine,
   formatChannelProgressDraftLineForEntry,
   formatChannelProgressDraftText,
-  isChannelProgressDraftWorkToolName,
-  mergeChannelProgressDraftLine,
-  resolveChannelProgressDraftMaxLines,
   resolveChannelStreamingBlockEnabled,
-  resolveChannelStreamingPreviewToolProgress,
   resolveTranscriptBackedChannelFinalText,
 } from "openclaw/plugin-sdk/channel-streaming";
 import type {
@@ -559,9 +555,6 @@ export const dispatchTelegramMessage = async ({
   };
   const answerLane = lanes.answer;
   const reasoningLane = lanes.reasoning;
-  const streamToolProgressEnabled =
-    Boolean(answerLane.stream) && resolveChannelStreamingPreviewToolProgress(telegramCfg);
-  let streamToolProgressSuppressed = false;
   let streamToolProgressLines: Array<string | ChannelProgressDraftLine> = [];
   let lastAnswerPartialText = "";
   let activeAnswerDraftIsToolProgressOnly = false;
@@ -606,67 +599,11 @@ export const dispatchTelegramMessage = async ({
     line?: string | ChannelProgressDraftLine,
     options?: { toolName?: string; startImmediately?: boolean },
   ) => {
-    if (!answerLane.stream) {
-      return;
-    }
-    if (options?.toolName !== undefined && !isChannelProgressDraftWorkToolName(options.toolName)) {
-      return;
-    }
-    const rawText = typeof line === "string" ? line : line?.text;
-    const normalized = sanitizeProgressMarkdownText(rawText?.replace(/\s+/g, " ").trim() ?? "");
-    const progressLine =
-      typeof line === "object" && line !== undefined ? { ...line, text: normalized } : normalized;
-    if (streamMode !== "progress") {
-      if (!streamToolProgressEnabled || streamToolProgressSuppressed || !normalized) {
-        return;
-      }
-      const nextLines = mergeChannelProgressDraftLine(streamToolProgressLines, progressLine, {
-        maxLines: resolveChannelProgressDraftMaxLines(telegramCfg),
-      });
-      if (nextLines === streamToolProgressLines) {
-        return;
-      }
-      streamToolProgressLines = nextLines;
-      const streamText = formatChannelProgressDraftText({
-        entry: telegramCfg,
-        lines: streamToolProgressLines,
-        seed: progressSeed,
-        formatLine: formatProgressAsMarkdownCode,
-      });
-      await prepareAnswerLaneForToolProgress();
-      answerLane.lastPartialText = streamText;
-      answerLane.hasStreamedMessage = true;
-      answerLane.finalized = false;
-      answerLane.stream.update(streamText);
-      return;
-    }
-    if (streamToolProgressEnabled && !streamToolProgressSuppressed && normalized) {
-      streamToolProgressLines = mergeChannelProgressDraftLine(
-        streamToolProgressLines,
-        progressLine,
-        {
-          maxLines: resolveChannelProgressDraftMaxLines(telegramCfg),
-        },
-      );
-    }
-    if (
-      options?.startImmediately &&
-      streamToolProgressEnabled &&
-      !streamToolProgressSuppressed &&
-      normalized
-    ) {
-      const alreadyStarted = progressDraftGate.hasStarted;
-      await progressDraftGate.startNow();
-      if (alreadyStarted && progressDraftGate.hasStarted) {
-        await renderProgressDraft();
-      }
-      return;
-    }
-    const alreadyStarted = progressDraftGate.hasStarted;
-    await progressDraftGate.noteWork();
-    if (alreadyStarted && progressDraftGate.hasStarted) {
-      await renderProgressDraft();
-    }
+    // Keep Telegram progress visible as durable dispatch messages instead of
+    // editing the live answer draft. This preserves the 5.3-style chat history
+    // when verbose progress is enabled.
+    void line;
+    void options;
   };
   let splitReasoningOnNextStream = false;
   let draftLaneEventQueue = Promise.resolve();
@@ -747,7 +684,6 @@ export const dispatchTelegramMessage = async ({
     await answerLane.stream?.clear();
     answerLane.stream?.forceNewMessage();
     resetDraftLaneState(answerLane);
-    streamToolProgressSuppressed = true;
     streamToolProgressLines = [];
     return true;
   };
@@ -775,7 +711,6 @@ export const dispatchTelegramMessage = async ({
         return;
       }
       resetAnswerToolProgressDraft();
-      streamToolProgressSuppressed = true;
       streamToolProgressLines = [];
     }
     lane.hasStreamedMessage = true;
@@ -953,6 +888,33 @@ export const dispatchTelegramMessage = async ({
   let hadErrorReplyFailureOrSkip = false;
   let isFirstTurnInSession = false;
   let dispatchError: unknown;
+  const TELEGRAM_TURN_TYPING_KEEPALIVE_MS = 4_200;
+  let telegramTypingKeepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+  let telegramTypingKeepaliveStopped = false;
+  const scheduleTelegramTypingKeepalive = () => {
+    if (telegramTypingKeepaliveStopped || isRoomEvent) {
+      return;
+    }
+    telegramTypingKeepaliveTimer = setTimeout(() => {
+      telegramTypingKeepaliveTimer = undefined;
+      if (telegramTypingKeepaliveStopped || isRoomEvent) {
+        return;
+      }
+      void sendTyping().catch((err) => {
+        logVerbose(`telegram typing keepalive failed for chat ${chatId}: ${String(err)}`);
+      });
+      scheduleTelegramTypingKeepalive();
+    }, TELEGRAM_TURN_TYPING_KEEPALIVE_MS);
+    telegramTypingKeepaliveTimer.unref?.();
+  };
+  const stopTelegramTypingKeepalive = () => {
+    telegramTypingKeepaliveStopped = true;
+    if (telegramTypingKeepaliveTimer) {
+      clearTimeout(telegramTypingKeepaliveTimer);
+      telegramTypingKeepaliveTimer = undefined;
+    }
+  };
+  scheduleTelegramTypingKeepalive();
 
   try {
     const sticker = ctxPayload.Sticker;
@@ -1505,7 +1467,6 @@ export const dispatchTelegramMessage = async ({
                     ? () =>
                         enqueueDraftLaneEvent(async () => {
                           reasoningStepState.resetForNextStep();
-                          streamToolProgressSuppressed = false;
                           streamToolProgressLines = [];
                           if (answerLane.finalized) {
                             await rotateLaneForNewMessage(answerLane);
@@ -1516,7 +1477,6 @@ export const dispatchTelegramMessage = async ({
                     ? () =>
                         enqueueDraftLaneEvent(async () => {
                           splitReasoningOnNextStream = reasoningLane.hasStreamedMessage;
-                          streamToolProgressSuppressed = false;
                           streamToolProgressLines = [];
                         })
                     : undefined,
@@ -1649,6 +1609,7 @@ export const dispatchTelegramMessage = async ({
       dispatchError = err;
       runtime.error?.(danger(`telegram dispatch failed: ${String(err)}`));
     } finally {
+      stopTelegramTypingKeepalive();
       await draftLaneEventQueue;
       progressDraftGate.cancel();
       const lanesToCleanup: Array<{ laneName: LaneName; lane: DraftLaneState }> = [

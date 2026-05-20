@@ -155,11 +155,37 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
           (options?.ingressBuffer ? ` buffer=${options.ingressBuffer}` : ""),
       );
     }
-    if (context.ctxPayload.InboundEventKind !== "room_event") {
+    const TELEGRAM_OUTER_TYPING_KEEPALIVE_MS = 4_200;
+    let outerTypingKeepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+    let outerTypingKeepaliveStopped = false;
+    const sendOuterTypingCue = () => {
+      if (outerTypingKeepaliveStopped || context.ctxPayload.InboundEventKind === "room_event") {
+        return;
+      }
       void context.sendTyping().catch((err) => {
-        logVerbose(`telegram early typing cue failed for chat ${context.chatId}: ${String(err)}`);
+        logVerbose(`telegram outer typing cue failed for chat ${context.chatId}: ${String(err)}`);
       });
-    }
+    };
+    const scheduleOuterTypingKeepalive = () => {
+      if (outerTypingKeepaliveStopped || context.ctxPayload.InboundEventKind === "room_event") {
+        return;
+      }
+      outerTypingKeepaliveTimer = setTimeout(() => {
+        outerTypingKeepaliveTimer = undefined;
+        sendOuterTypingCue();
+        scheduleOuterTypingKeepalive();
+      }, TELEGRAM_OUTER_TYPING_KEEPALIVE_MS);
+      outerTypingKeepaliveTimer.unref?.();
+    };
+    const stopOuterTypingKeepalive = () => {
+      outerTypingKeepaliveStopped = true;
+      if (outerTypingKeepaliveTimer) {
+        clearTimeout(outerTypingKeepaliveTimer);
+        outerTypingKeepaliveTimer = undefined;
+      }
+    };
+    sendOuterTypingCue();
+    scheduleOuterTypingKeepalive();
     telegramInboundLog.info(
       formatTelegramInboundLogLine({
         from: context.ctxPayload.From,
@@ -199,6 +225,8 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
           buildTelegramThreadParams(context.threadSpec),
         );
       } catch {}
+    } finally {
+      stopOuterTypingKeepalive();
     }
   };
 };
