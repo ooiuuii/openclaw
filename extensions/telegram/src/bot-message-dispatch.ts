@@ -1328,7 +1328,7 @@ export const dispatchTelegramMessage = async ({
                               payload: effectivePayload,
                               infoKind: info.kind,
                               buttons: telegramButtons,
-                              allowPreviewUpdateForNonFinal: segment.lane === "reasoning",
+                              allowPreviewUpdateForNonFinal: true,
                             });
                       if (info.kind === "final") {
                         emitPreviewFinalizedHook(result);
