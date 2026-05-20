@@ -75,6 +75,7 @@ type DeliverLaneTextParams = {
   payload: ReplyPayload;
   infoKind: string;
   buttons?: TelegramInlineButtons;
+  allowPreviewUpdateForNonFinal?: boolean;
 };
 
 function result(
@@ -379,13 +380,16 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
     payload,
     infoKind,
     buttons,
+    allowPreviewUpdateForNonFinal = false,
   }: DeliverLaneTextParams): Promise<LaneDeliveryResult> => {
     const lane = params.lanes[laneName];
     const reply = resolveSendableOutboundReplyParts(payload, { text });
     const isFinal = infoKind === "final";
-    const streamed = !reply.hasMedia
-      ? await streamText(laneName, lane, text, payload, isFinal, buttons)
-      : undefined;
+    const canUpdatePreview = isFinal || allowPreviewUpdateForNonFinal;
+    const streamed =
+      canUpdatePreview && !reply.hasMedia
+        ? await streamText(laneName, lane, text, payload, isFinal, buttons)
+        : undefined;
     if (streamed) {
       return streamed;
     }

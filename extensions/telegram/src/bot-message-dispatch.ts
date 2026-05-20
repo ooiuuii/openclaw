@@ -1304,9 +1304,6 @@ export const dispatchTelegramMessage = async ({
                       if (segment.lane === "reasoning") {
                         reasoningStepState.noteReasoningHint();
                       }
-                      if (segment.lane === "answer" && info.kind === "tool") {
-                        await prepareAnswerLaneForToolProgress();
-                      }
                       const result =
                         segment.lane === "answer" && info.kind === "final"
                           ? await deliverFinalAnswerText(
@@ -1320,6 +1317,7 @@ export const dispatchTelegramMessage = async ({
                               payload: effectivePayload,
                               infoKind: info.kind,
                               buttons: telegramButtons,
+                              allowPreviewUpdateForNonFinal: segment.lane === "reasoning",
                             });
                       if (info.kind === "final") {
                         emitPreviewFinalizedHook(result);

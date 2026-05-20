@@ -127,6 +127,7 @@ describe("createLaneTextDeliverer", () => {
       text: "working",
       payload: { text: "working" },
       infoKind: "block",
+      allowPreviewUpdateForNonFinal: true,
     });
     const finalResult = await deliverFinalAnswer(harness, "done");
 
@@ -139,6 +140,22 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.flushDraftLane).toHaveBeenCalledTimes(1);
     expect(harness.stopDraftLane).toHaveBeenCalledTimes(1);
     expect(harness.sendPayload).not.toHaveBeenCalled();
+  });
+
+  it("sends non-final answer updates as standalone messages by default", async () => {
+    const harness = createHarness({ answerMessageId: 999 });
+
+    const blockResult = await harness.deliverLaneText({
+      laneName: "answer",
+      text: "working",
+      payload: { text: "working" },
+      infoKind: "block",
+    });
+
+    expect(blockResult.kind).toBe("sent");
+    expect(harness.answer?.update).not.toHaveBeenCalled();
+    expect(harness.flushDraftLane).not.toHaveBeenCalled();
+    expect(harness.sendPayload).toHaveBeenCalledWith({ text: "working" }, { durable: false });
   });
 
   it("uses normal final delivery when the stream edit leaves stale text", async () => {
