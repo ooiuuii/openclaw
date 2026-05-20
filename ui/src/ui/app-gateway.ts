@@ -871,6 +871,17 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
     return;
   }
 
+  if (evt.event === "session.tool") {
+    if (host.onboarding) {
+      return;
+    }
+    handleAgentEvent(
+      host as unknown as Parameters<typeof handleAgentEvent>[0],
+      evt.payload as AgentEventPayload | undefined,
+    );
+    return;
+  }
+
   if (evt.event === "chat") {
     handleChatGatewayEvent(host, evt.payload as ChatEventPayload | undefined);
     return;

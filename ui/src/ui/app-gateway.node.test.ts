@@ -220,6 +220,25 @@ function emitToolResultEvent(client: GatewayClientMock) {
   });
 }
 
+function emitSessionToolResultEvent(client: GatewayClientMock) {
+  client.emitEvent({
+    event: "session.tool",
+    payload: {
+      runId: "engine-run-2",
+      seq: 2,
+      stream: "tool",
+      ts: 2,
+      sessionKey: "main",
+      data: {
+        toolCallId: "tool-session-1",
+        name: "bash",
+        phase: "result",
+        result: { output: "done" },
+      },
+    },
+  });
+}
+
 describe("connectGateway", () => {
   beforeEach(() => {
     gatewayClientInstances.length = 0;
@@ -269,6 +288,15 @@ describe("connectGateway", () => {
     secondClient.emitEvent({ event: "presence", payload: { presence: [{ host: "active" }] } });
     expect(host.eventLogBuffer).toHaveLength(1);
     expect(host.eventLogBuffer[0]?.event).toBe("presence");
+  });
+
+  it("renders session.tool events for session-scoped live tool updates", () => {
+    const { host, client } = connectHostGateway();
+
+    emitSessionToolResultEvent(client);
+
+    expect(host.toolStreamOrder).toStrictEqual(["tool-session-1"]);
+    expect(host.toolStreamById.has("tool-session-1")).toBe(true);
   });
 
   it("marks orphaned run state interrupted after reconnect hello", () => {
