@@ -606,7 +606,14 @@ export const dispatchTelegramMessage = async ({
       return;
     }
     void options;
-    await sendStandaloneToolProgress?.(text);
+    const delivered = await sendStandaloneToolProgress?.(text);
+    if (delivered && !isRoomEvent) {
+      void sendTyping().catch((err) => {
+        logVerbose(
+          `telegram typing cue after tool progress failed for chat ${chatId}: ${String(err)}`,
+        );
+      });
+    }
   };
   let splitReasoningOnNextStream = false;
   let draftLaneEventQueue = Promise.resolve();
