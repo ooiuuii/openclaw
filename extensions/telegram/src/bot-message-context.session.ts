@@ -17,6 +17,7 @@ import type {
   TelegramTopicConfig,
 } from "openclaw/plugin-sdk/config-contracts";
 import { resolveChannelContextVisibilityMode } from "openclaw/plugin-sdk/context-visibility-runtime";
+import type { ChannelTurnRecordOptions } from "openclaw/plugin-sdk/inbound-reply-dispatch";
 import { createChannelHistoryWindow, type HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
@@ -194,12 +195,7 @@ export async function buildTelegramInboundContextPayload(params: {
   turn: {
     storePath: string;
     recordInboundSession: TelegramMessageContextSessionRuntime["recordInboundSession"];
-    record: {
-      updateLastRoute?: Parameters<
-        TelegramMessageContextSessionRuntime["recordInboundSession"]
-      >[0]["updateLastRoute"];
-      onRecordError: (err: unknown) => void;
-    };
+    record: ChannelTurnRecordOptions & { onRecordError: (err: unknown) => void };
   };
 }> {
   const {

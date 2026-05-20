@@ -190,6 +190,100 @@ type TelegramReasoningLevel = "off" | "on" | "stream";
 
 type TelegramTranscriptMirrorPayload = { text?: string; mediaUrls?: string[] };
 
+function resolveTelegramInboundUserTranscriptText(
+  ctxPayload: TelegramMessageContext["ctxPayload"],
+) {
+  const text =
+    typeof ctxPayload.BodyForAgent === "string" && ctxPayload.BodyForAgent.trim()
+      ? ctxPayload.BodyForAgent
+      : typeof ctxPayload.Body === "string" && ctxPayload.Body.trim()
+        ? ctxPayload.Body
+        : typeof ctxPayload.RawBody === "string" && ctxPayload.RawBody.trim()
+          ? ctxPayload.RawBody
+          : "";
+  return text.trim() ? text : null;
+}
+
+function resolveTelegramInboundTimestampMs(ctxPayload: TelegramMessageContext["ctxPayload"]) {
+  const timestamp = typeof ctxPayload.Timestamp === "number" ? ctxPayload.Timestamp : null;
+  if (timestamp === null || !Number.isFinite(timestamp) || timestamp <= 0) {
+    return Date.now();
+  }
+  return timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
+}
+
+function resolveTelegramLiveInboundMessageId(params: {
+  accountId?: string;
+  chatId: string | number;
+  ctxPayload: TelegramMessageContext["ctxPayload"];
+}) {
+  const sourceId =
+    typeof params.ctxPayload.MessageSid === "string" && params.ctxPayload.MessageSid.trim()
+      ? params.ctxPayload.MessageSid.trim()
+      : String(params.chatId);
+  const accountId = params.accountId?.trim() || "default";
+  return `telegram:${accountId}:${params.chatId}:${sourceId}`;
+}
+
+async function emitTelegramInboundUserTranscriptUpdate(params: {
+  cfg: OpenClawConfig;
+  route: TelegramMessageContext["route"];
+  chatId: string | number;
+  sessionKey: string;
+  telegramDeps: TelegramBotDeps;
+  ctxPayload: TelegramMessageContext["ctxPayload"];
+}) {
+  const text = resolveTelegramInboundUserTranscriptText(params.ctxPayload);
+  if (!text) {
+    return;
+  }
+  const storePath = params.telegramDeps.resolveStorePath(params.cfg.session?.store, {
+    agentId: params.route.agentId,
+  });
+  const store = (params.telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
+    skipCache: true,
+  });
+  const sessionEntry = resolveSessionStoreEntry({
+    store,
+    sessionKey: params.sessionKey,
+  }).existing;
+  if (!sessionEntry?.sessionId) {
+    return;
+  }
+  const { sessionFile } = await resolveAndPersistSessionFile({
+    sessionId: sessionEntry.sessionId,
+    sessionKey: params.sessionKey,
+    sessionStore: store,
+    storePath,
+    sessionEntry,
+    agentId: params.route.agentId,
+    sessionsDir: path.dirname(storePath),
+  });
+  const messageId = resolveTelegramLiveInboundMessageId({
+    accountId: params.route.accountId,
+    chatId: params.chatId,
+    ctxPayload: params.ctxPayload,
+  });
+  emitSessionTranscriptUpdate({
+    sessionFile,
+    sessionKey: params.sessionKey,
+    messageId,
+    message: {
+      id: messageId,
+      role: "user",
+      content: [{ type: "text", text }],
+      timestamp: resolveTelegramInboundTimestampMs(params.ctxPayload),
+      sourceChannel: "telegram",
+      sourceProvider: "telegram",
+      sourceMessageId: params.ctxPayload.MessageSid,
+      senderId: params.ctxPayload.SenderId,
+      senderName: params.ctxPayload.SenderName,
+      senderUsername: params.ctxPayload.SenderUsername,
+      openclawLiveInboundEcho: true,
+    },
+  });
+}
+
 function resolveTelegramReasoningLevel(params: {
   cfg: OpenClawConfig;
   sessionKey?: string;
@@ -1216,7 +1310,20 @@ export const dispatchTelegramMessage = async ({
             storePath: context.turn.storePath,
             ctxPayload,
             recordInboundSession: context.turn.recordInboundSession,
-            record: context.turn.record,
+            record: {
+              ...context.turn.record,
+              onRecordedInboundMessage: async (recordParams) => {
+                await context.turn.record?.onRecordedInboundMessage?.(recordParams);
+                await emitTelegramInboundUserTranscriptUpdate({
+                  cfg,
+                  route,
+                  chatId,
+                  sessionKey: recordParams.sessionKey,
+                  telegramDeps,
+                  ctxPayload,
+                });
+              },
+            },
             runDispatch: () => {
               const sentBlockMediaUrls = new Set<string>();
 

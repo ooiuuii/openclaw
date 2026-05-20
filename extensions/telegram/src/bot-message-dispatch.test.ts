@@ -965,6 +965,67 @@ describe("dispatchTelegramMessage draft streaming", () => {
     });
   });
 
+  it("emits inbound user transcript updates after session record and before dispatch", async () => {
+    const events: string[] = [];
+    const context = createContext({
+      ctxPayload: {
+        SessionKey: "agent:main:main",
+        MessageSid: "5234",
+        RawBody: "来自telegram的同步测试",
+        BodyForAgent: "来自telegram的同步测试",
+        Timestamp: 1_779_292_997,
+        ChatType: "direct",
+        SenderId: "8589344021",
+        SenderName: "Yifan",
+        SenderUsername: "ooiuuii",
+      } as unknown as TelegramMessageContext["ctxPayload"],
+    });
+    context.turn = {
+      ...context.turn,
+      recordInboundSession: vi.fn(async () => {
+        events.push("record");
+      }),
+    };
+    loadSessionStore.mockReturnValue({
+      "agent:main:main": { sessionId: "s-main" },
+    });
+    emitSessionTranscriptUpdate.mockImplementationOnce(() => {
+      events.push("emit");
+    });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
+      events.push("dispatch");
+      return {
+        queuedFinal: false,
+        counts: { block: 0, final: 0, tool: 0 },
+      };
+    });
+
+    await dispatchWithContext({ context });
+
+    expect(events).toEqual(["record", "emit", "dispatch"]);
+    expectRecordFields(mockCallArg(emitSessionTranscriptUpdate), {
+      sessionFile: "/tmp/session.jsonl",
+      sessionKey: "agent:main:main",
+      messageId: "telegram:default:123:5234",
+    });
+    expectRecordFields(
+      (mockCallArg(emitSessionTranscriptUpdate) as { message?: unknown }).message,
+      {
+        id: "telegram:default:123:5234",
+        role: "user",
+        content: [{ type: "text", text: "来自telegram的同步测试" }],
+        timestamp: 1_779_292_997_000,
+        sourceChannel: "telegram",
+        sourceProvider: "telegram",
+        sourceMessageId: "5234",
+        senderId: "8589344021",
+        senderName: "Yifan",
+        senderUsername: "ooiuuii",
+        openclawLiveInboundEcho: true,
+      },
+    );
+  });
+
   it("mirrors the longer streamed preview when final text is truncated", async () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     const fullAnswer =

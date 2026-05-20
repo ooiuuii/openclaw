@@ -310,6 +310,12 @@ export type ChannelTurnRecordOptions = {
   createIfMissing?: boolean;
   updateLastRoute?: InboundLastRouteUpdate;
   onRecordError?: (err: unknown) => void;
+  onRecordedInboundMessage?: (params: {
+    storePath: string;
+    sessionKey: string;
+    ctx: FinalizedMsgContext;
+    input: NormalizedTurnInput;
+  }) => MaybePromise<void>;
   trackSessionMetaTask?: (task: Promise<unknown>) => void;
 };
 

@@ -594,6 +594,47 @@ describe("channel turn kernel", () => {
     ]);
   });
 
+  it("runs recorded inbound message hooks before prepared dispatches", async () => {
+    const events: string[] = [];
+    const onRecordedInboundMessage = vi.fn(async () => {
+      events.push("live-user");
+    });
+    const recordInboundSession = createRecordInboundSession(events);
+    const runDispatch = vi.fn(async () => {
+      events.push("dispatch");
+      return {
+        queuedFinal: true,
+        counts: { tool: 0, block: 0, final: 1 },
+      };
+    });
+
+    await runPreparedChannelTurn({
+      channel: "test",
+      routeSessionKey: "agent:main:test:peer",
+      storePath: "/tmp/sessions.json",
+      ctxPayload: createCtx({ BodyForAgent: "hello agent", RawBody: "hello raw" }),
+      recordInboundSession,
+      runDispatch,
+      record: {
+        onRecordedInboundMessage,
+      },
+      messageId: "msg-live",
+    });
+
+    expect(events).toEqual(["record", "live-user", "dispatch"]);
+    expect(onRecordedInboundMessage).toHaveBeenCalledWith({
+      storePath: "/tmp/sessions.json",
+      sessionKey: "agent:main:test:peer",
+      ctx: expect.objectContaining({ BodyForAgent: "hello agent", RawBody: "hello raw" }),
+      input: {
+        id: "msg-live",
+        rawText: "hello raw",
+        textForAgent: "hello agent",
+        textForCommands: "hello",
+      },
+    });
+  });
+
   it("drops direct prepared turns with bot-loop protection before record and dispatch", async () => {
     const events: string[] = [];
     const log = vi.fn();

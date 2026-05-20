@@ -430,6 +430,21 @@ async function runPreparedChannelTurnCore<
       onRecordError: params.record?.onRecordError ?? (() => undefined),
       trackSessionMetaTask: params.record?.trackSessionMetaTask,
     });
+    try {
+      await params.record?.onRecordedInboundMessage?.({
+        storePath: params.storePath,
+        sessionKey: params.ctxPayload.SessionKey ?? params.routeSessionKey,
+        ctx: params.ctxPayload,
+        input: {
+          id: params.messageId ?? "",
+          rawText: params.ctxPayload.RawBody ?? "",
+          textForAgent: params.ctxPayload.BodyForAgent,
+          textForCommands: params.ctxPayload.CommandBody,
+        },
+      });
+    } catch (err) {
+      params.record?.onRecordError?.(err);
+    }
     emit({
       ...params,
       event: {

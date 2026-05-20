@@ -420,6 +420,53 @@ describe("handleGatewayEvent session.message", () => {
     expect(loadChatHistoryMock).not.toHaveBeenCalled();
   });
 
+  it("deduplicates live inbound user echoes against final transcript messages", () => {
+    loadChatHistoryMock.mockReset();
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message: {
+          id: "telegram:default:123:5234",
+          role: "user",
+          content: [{ type: "text", text: "来自telegram的同步测试" }],
+          timestamp: 100,
+          openclawLiveInboundEcho: true,
+        },
+        messageId: "telegram:default:123:5234",
+      },
+      seq: 1,
+    });
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message: {
+          id: "msg-final-1",
+          seq: 15,
+          role: "user",
+          content: [{ type: "text", text: "来自telegram的同步测试" }],
+          timestamp: 200,
+        },
+        messageId: "msg-final-1",
+        messageSeq: 15,
+      },
+      seq: 2,
+    });
+
+    expect(host.chatMessages).toHaveLength(1);
+    expect(host.chatMessages[0]).toMatchObject({
+      id: "telegram:default:123:5234",
+      openclawLiveInboundEcho: true,
+    });
+    expect(loadChatHistoryMock).not.toHaveBeenCalled();
+  });
+
   it("does not duplicate the sender optimistic user message during an active run", () => {
     loadChatHistoryMock.mockReset();
     loadSessionsMock.mockReset().mockResolvedValue(undefined);

@@ -862,6 +862,15 @@ function appendLiveSessionMessage(host: GatewayHost, payload: SessionMessagePayl
   ) {
     return true;
   }
+  const liveEchoSignature = buildSessionMessageLiveEchoSignature(message);
+  if (
+    liveEchoSignature &&
+    currentMessages.some((entry) =>
+      sessionMessageMatchesLiveEchoFinalPair(entry, message, liveEchoSignature),
+    )
+  ) {
+    return true;
+  }
   const optimisticSignature = buildSessionMessageOptimisticSignature(message);
   if (
     host.chatRunId &&
@@ -959,6 +968,37 @@ function buildSessionMessageOptimisticSignature(message: unknown): string | null
   } catch {
     return null;
   }
+}
+
+function buildSessionMessageLiveEchoSignature(message: unknown): string | null {
+  if (!isRecord(message)) {
+    return null;
+  }
+  const role = typeof message.role === "string" ? message.role.toLowerCase() : "";
+  if (role !== "user") {
+    return null;
+  }
+  try {
+    return JSON.stringify([role, message.content ?? null, message.text ?? null]);
+  } catch {
+    return null;
+  }
+}
+
+function isLiveInboundEchoMessage(message: unknown): boolean {
+  return isRecord(message) && message.openclawLiveInboundEcho === true;
+}
+
+function sessionMessageMatchesLiveEchoFinalPair(
+  entry: unknown,
+  incoming: unknown,
+  incomingSignature: string,
+): boolean {
+  const entrySignature = buildSessionMessageLiveEchoSignature(entry);
+  if (!entrySignature || entrySignature !== incomingSignature) {
+    return false;
+  }
+  return isLiveInboundEchoMessage(entry) !== isLiveInboundEchoMessage(incoming);
 }
 
 function replayDeferredSessionMessageReloadAfterSessionsRefresh(
