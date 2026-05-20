@@ -61,6 +61,7 @@ export function startGatewayEventSubscriptions(params: {
       ({ createTranscriptUpdateBroadcastHandler }) =>
         createTranscriptUpdateBroadcastHandler({
           broadcastToConnIds: params.broadcastToConnIds,
+          nodeSendToSession: params.nodeSendToSession,
           sessionEventSubscribers: params.sessionEventSubscribers,
           sessionMessageSubscribers: params.sessionMessageSubscribers,
         }),

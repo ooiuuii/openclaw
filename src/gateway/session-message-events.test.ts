@@ -6,6 +6,7 @@ import { appendAssistantMessageToSessionTranscript } from "../config/sessions/tr
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import * as transcriptEvents from "../sessions/transcript-events.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { createTranscriptUpdateBroadcastHandler } from "./server-session-events.js";
 import { testState } from "./test-helpers.runtime-state.js";
 import {
   connectOk,
@@ -148,6 +149,52 @@ function expectRecordFields(value: unknown, expected: Record<string, unknown>): 
 }
 
 describe("session.message websocket events", () => {
+  test("forwards transcript timeline events to subscribed node viewers without local websocket subscribers", async () => {
+    const broadcastToConnIds = vi.fn();
+    const nodeSendToSession = vi.fn();
+    const handler = createTranscriptUpdateBroadcastHandler({
+      broadcastToConnIds,
+      nodeSendToSession,
+      sessionEventSubscribers: { getAll: () => new Set<string>() },
+      sessionMessageSubscribers: { get: () => new Set<string>() },
+    });
+
+    handler({
+      sessionFile: "/tmp/sess-main.jsonl",
+      sessionKey: "agent:main:main",
+      messageId: "msg-node-1",
+      messageSeq: 3,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "node timeline message" }],
+        timestamp: Date.now(),
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(nodeSendToSession).toHaveBeenCalledWith(
+        "agent:main:main",
+        "session.message",
+        expect.objectContaining({
+          sessionKey: "agent:main:main",
+          messageId: "msg-node-1",
+          messageSeq: 3,
+        }),
+      );
+      expect(nodeSendToSession).toHaveBeenCalledWith(
+        "agent:main:main",
+        "sessions.changed",
+        expect.objectContaining({
+          sessionKey: "agent:main:main",
+          phase: "message",
+          messageId: "msg-node-1",
+          messageSeq: 3,
+        }),
+      );
+    });
+    expect(broadcastToConnIds).not.toHaveBeenCalled();
+  });
+
   test("includes spawned session ownership metadata on lifecycle sessions.changed events", async () => {
     const storePath = await createSessionStoreFile();
     await writeSessionStore({

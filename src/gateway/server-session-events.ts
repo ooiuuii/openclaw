@@ -18,6 +18,7 @@ import {
 
 type SessionEventSubscribers = Pick<SessionEventSubscriberRegistry, "getAll">;
 type SessionMessageSubscribers = Pick<SessionMessageSubscriberRegistry, "get">;
+type NodeSendToSession = (sessionKey: string, event: string, payload: unknown) => void;
 
 function buildGatewaySessionSnapshot(params: {
   sessionRow: GatewaySessionRow | null | undefined;
@@ -86,6 +87,7 @@ function buildGatewaySessionSnapshot(params: {
 
 export function createTranscriptUpdateBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
+  nodeSendToSession: NodeSendToSession;
   sessionEventSubscribers: SessionEventSubscribers;
   sessionMessageSubscribers: SessionMessageSubscribers;
 }) {
@@ -100,6 +102,7 @@ export function createTranscriptUpdateBroadcastHandler(params: {
 async function handleTranscriptUpdateBroadcast(
   params: {
     broadcastToConnIds: GatewayBroadcastToConnIdsFn;
+    nodeSendToSession: NodeSendToSession;
     sessionEventSubscribers: SessionEventSubscribers;
     sessionMessageSubscribers: SessionMessageSubscribers;
   },
@@ -115,9 +118,6 @@ async function handleTranscriptUpdateBroadcast(
   }
   for (const connId of params.sessionMessageSubscribers.get(sessionKey)) {
     connIds.add(connId);
-  }
-  if (connIds.size === 0) {
-    return;
   }
   let messageSeq = asPositiveSafeInteger(update.messageSeq);
   if (messageSeq === undefined) {
@@ -138,37 +138,34 @@ async function handleTranscriptUpdateBroadcast(
   });
   const message = projectChatDisplayMessage(rawMessage);
   if (message) {
-    params.broadcastToConnIds(
-      "session.message",
-      {
-        sessionKey,
-        message,
-        ...(typeof update.messageId === "string" ? { messageId: update.messageId } : {}),
-        ...(messageSeq !== undefined ? { messageSeq } : {}),
-        ...sessionSnapshot,
-      },
-      connIds,
-      { dropIfSlow: true },
-    );
-  }
-
-  const sessionEventConnIds = params.sessionEventSubscribers.getAll();
-  if (sessionEventConnIds.size === 0) {
-    return;
-  }
-  params.broadcastToConnIds(
-    "sessions.changed",
-    {
+    const messagePayload = {
       sessionKey,
-      phase: "message",
-      ts: Date.now(),
+      message,
       ...(typeof update.messageId === "string" ? { messageId: update.messageId } : {}),
       ...(messageSeq !== undefined ? { messageSeq } : {}),
       ...sessionSnapshot,
-    },
-    sessionEventConnIds,
-    { dropIfSlow: true },
-  );
+    };
+    if (connIds.size > 0) {
+      params.broadcastToConnIds("session.message", messagePayload, connIds, { dropIfSlow: true });
+    }
+    params.nodeSendToSession(sessionKey, "session.message", messagePayload);
+  }
+
+  const sessionEventConnIds = params.sessionEventSubscribers.getAll();
+  const changedPayload = {
+    sessionKey,
+    phase: "message",
+    ts: Date.now(),
+    ...(typeof update.messageId === "string" ? { messageId: update.messageId } : {}),
+    ...(messageSeq !== undefined ? { messageSeq } : {}),
+    ...sessionSnapshot,
+  };
+  if (sessionEventConnIds.size > 0) {
+    params.broadcastToConnIds("sessions.changed", changedPayload, sessionEventConnIds, {
+      dropIfSlow: true,
+    });
+  }
+  params.nodeSendToSession(sessionKey, "sessions.changed", changedPayload);
 }
 
 export function createLifecycleEventBroadcastHandler(params: {
