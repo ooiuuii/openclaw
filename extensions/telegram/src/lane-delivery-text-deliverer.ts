@@ -394,6 +394,10 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams) {
       return streamed;
     }
 
+    if (!isFinal && allowPreviewUpdateForNonFinal) {
+      return result("skipped");
+    }
+
     if (
       isFinal &&
       reply.hasMedia &&

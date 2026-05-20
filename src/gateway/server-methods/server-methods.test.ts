@@ -543,9 +543,62 @@ describe("projectRecentChatDisplayMessages", () => {
 
     expect(result[1]).toEqual({
       role: "assistant",
-      content: [{ type: "text", text: "I will clean that up now." }],
+      content: [
+        {
+          type: "text",
+          text: "I will clean that up now.",
+          textSignature: JSON.stringify({
+            v: 1,
+            id: "msg-progress",
+            phase: "commentary",
+          }),
+        },
+        {
+          type: "toolCall",
+          id: "call-read",
+          name: "read",
+          arguments: { path: "AGENTS.md" },
+        },
+      ],
       timestamp: 2,
       __openclaw: { seq: 2 },
+    });
+  });
+
+  it("keeps commentary assistant tool calls visible even without progress text", () => {
+    const result = projectRecentChatDisplayMessages([
+      {
+        role: "user",
+        content: [{ type: "text", text: "read it" }],
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-read",
+            name: "read",
+            arguments: { path: "AGENTS.md" },
+          },
+        ],
+        phase: "commentary",
+        timestamp: 2,
+      },
+    ]);
+
+    expect(result[1]).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-read",
+          name: "read",
+          arguments: { path: "AGENTS.md" },
+        },
+      ],
+      phase: "commentary",
+      timestamp: 2,
     });
   });
 

@@ -158,6 +158,22 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.sendPayload).toHaveBeenCalledWith({ text: "working" }, { durable: false });
   });
 
+  it("skips non-final preview updates when no draft stream is available", async () => {
+    const harness = createHarness({ answerStream: null });
+
+    const blockResult = await harness.deliverLaneText({
+      laneName: "answer",
+      text: "w",
+      payload: { text: "w" },
+      infoKind: "block",
+      allowPreviewUpdateForNonFinal: true,
+    });
+
+    expect(blockResult.kind).toBe("skipped");
+    expect(harness.sendPayload).not.toHaveBeenCalled();
+    expect(harness.markDelivered).not.toHaveBeenCalled();
+  });
+
   it("uses normal final delivery when the stream edit leaves stale text", async () => {
     const answer = createTestDraftStream({ messageId: 999 });
     answer.lastDeliveredText.mockReturnValue("working");
