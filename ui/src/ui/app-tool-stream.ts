@@ -674,7 +674,7 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
   }
   const name = typeof data.name === "string" ? data.name : "tool";
   const phase = typeof data.phase === "string" ? data.phase : "";
-  const args = phase === "start" ? data.args : undefined;
+  const args = phase === "start" ? (data.args ?? data.arguments) : undefined;
   const output =
     phase === "update"
       ? formatToolOutput(data.partialResult)

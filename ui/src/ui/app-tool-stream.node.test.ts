@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  flushToolStreamSync,
   handleAgentEvent,
   handleSessionOperationEvent,
   type FallbackStatus,
@@ -216,6 +217,30 @@ describe("app-tool-stream fallback lifecycle handling", () => {
     const fallbackStatus = requireFallbackStatus(host);
     expect(fallbackStatus.phase).toBe("cleared");
     expect(fallbackStatus.previous).toBe("deepinfra/moonshotai/Kimi-K2.5");
+    vi.useRealTimers();
+  });
+
+  it("keeps tool input visible when tool start payload uses arguments", () => {
+    useToolStreamFakeTimers();
+    const host = createHost({ chatRunId: "run-1" });
+
+    handleAgentEvent(
+      host,
+      agentEvent("run-1", 1, "tool", {
+        phase: "start",
+        toolCallId: "tool-1",
+        name: "browser",
+        arguments: { action: "open", url: "https://example.com" },
+      }),
+    );
+
+    flushToolStreamSync(host);
+    const message = host.chatToolMessages[0] as { content?: Array<Record<string, unknown>> };
+    expect(message.content?.[0]).toMatchObject({
+      type: "toolcall",
+      name: "browser",
+      arguments: { action: "open", url: "https://example.com" },
+    });
     vi.useRealTimers();
   });
 

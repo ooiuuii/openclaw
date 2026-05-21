@@ -2723,7 +2723,7 @@ export function renderApp(state: AppViewState) {
                   onDismissError: () => dismissChatError(state),
                   sessions: state.sessionsResult,
                   focusMode: chatFocus,
-                  autoExpandToolCalls: false,
+                  autoExpandToolCalls: showToolCalls,
                   onRefresh: () => {
                     state.chatSideResult = null;
                     state.resetToolStream();
