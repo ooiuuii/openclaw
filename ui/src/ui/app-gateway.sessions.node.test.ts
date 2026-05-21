@@ -420,6 +420,99 @@ describe("handleGatewayEvent session.message", () => {
     expect(loadChatHistoryMock).not.toHaveBeenCalled();
   });
 
+  it("appends assistant transcript messages for the active session immediately", () => {
+    loadChatHistoryMock.mockReset();
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+    const message = {
+      id: "msg-assistant-1",
+      seq: 21,
+      role: "assistant",
+      content: [{ type: "text", text: "Telegram final reply" }],
+      timestamp: 789,
+    };
+
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message,
+        messageId: "msg-assistant-1",
+        messageSeq: 21,
+      },
+      seq: 1,
+    });
+
+    expect(host.chatMessages).toHaveLength(1);
+    expect(host.chatMessages[0]).toMatchObject(message);
+    expect(loadChatHistoryMock).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate assistant transcript messages already appended by chat final events", () => {
+    loadChatHistoryMock.mockReset();
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "run-final",
+        sessionKey: "agent:qa:main",
+        state: "final",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Same final answer" }],
+        },
+      },
+      seq: 1,
+    });
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message: {
+          id: "msg-assistant-2",
+          role: "assistant",
+          content: [{ type: "text", text: "Same final answer" }],
+          timestamp: 900,
+        },
+        messageId: "msg-assistant-2",
+      },
+      seq: 2,
+    });
+
+    expect(host.chatMessages).toHaveLength(1);
+    expect(loadChatHistoryMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to history reload for silent assistant transcript messages", () => {
+    loadChatHistoryMock.mockReset();
+    const host = createHost();
+    host.sessionKey = "agent:qa:main";
+
+    handleGatewayEvent(host, {
+      type: "event",
+      event: "session.message",
+      payload: {
+        sessionKey: "agent:qa:main",
+        message: {
+          id: "msg-assistant-silent",
+          role: "assistant",
+          content: [{ type: "text", text: "NO_REPLY" }],
+          timestamp: 901,
+        },
+        messageId: "msg-assistant-silent",
+      },
+      seq: 1,
+    });
+
+    expect(host.chatMessages).toStrictEqual([]);
+    expect(loadChatHistoryMock).toHaveBeenCalledTimes(1);
+  });
+
   it("deduplicates live inbound user echoes against final transcript messages", () => {
     loadChatHistoryMock.mockReset();
     const host = createHost();

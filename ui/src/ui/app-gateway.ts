@@ -26,6 +26,8 @@ import {
   type SessionOperationEventPayload,
 } from "./app-tool-stream.ts";
 import { shouldReloadHistoryForFinalEvent } from "./chat-event-reload.ts";
+import { isAssistantHeartbeatAckForDisplay } from "./chat/heartbeat-display.ts";
+import { extractText } from "./chat/message-extract.ts";
 import { reconcileChatRunLifecycle } from "./chat/run-lifecycle.ts";
 import { parseChatSideResult, type ChatSideResult } from "./chat/side-result.ts";
 import { formatConnectError } from "./connect-error.ts";
@@ -153,6 +155,7 @@ const SESSIONS_CHANGED_RELOAD_DEBOUNCE_MS = 5_000;
 const DEFERRED_SESSION_MESSAGE_REPLAY_POLL_MS = 250;
 const DEFERRED_SESSION_MESSAGE_REPLAY_TIMEOUT_MS = 10_000;
 const SESSION_MESSAGE_DEDUPE_KEY = "__openclawSessionMessageKey";
+const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
 function enqueueApprovalRequest(host: GatewayHost, entry: ExecApprovalRequest | null) {
   if (!entry) {
@@ -844,7 +847,7 @@ function appendLiveSessionMessage(host: GatewayHost, payload: SessionMessagePayl
   if (!isRecord(message)) {
     return false;
   }
-  if (typeof message.role !== "string" || message.role.toLowerCase() !== "user") {
+  if (!isRenderableLiveSessionMessage(message)) {
     return false;
   }
   const chatState = host as unknown as ChatState & { chatMessages?: unknown[] };
@@ -881,6 +884,15 @@ function appendLiveSessionMessage(host: GatewayHost, payload: SessionMessagePayl
   ) {
     return true;
   }
+  const assistantSignature = buildSessionMessageAssistantDisplaySignature(message);
+  const lastMessage = currentMessages.at(-1);
+  if (
+    assistantSignature &&
+    lastMessage &&
+    buildSessionMessageAssistantDisplaySignature(lastMessage) === assistantSignature
+  ) {
+    return true;
+  }
   chatState.chatMessages = [
     ...currentMessages,
     key ? { ...message, [SESSION_MESSAGE_DEDUPE_KEY]: key } : message,
@@ -890,6 +902,24 @@ function appendLiveSessionMessage(host: GatewayHost, payload: SessionMessagePayl
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRenderableLiveSessionMessage(message: Record<string, unknown>): boolean {
+  const role = typeof message.role === "string" ? message.role.toLowerCase() : "";
+  if (role === "user") {
+    return true;
+  }
+  if (role !== "assistant") {
+    return false;
+  }
+  if (!("content" in message) && !("text" in message)) {
+    return false;
+  }
+  const text = extractText(message);
+  if (typeof text === "string" && SILENT_REPLY_PATTERN.test(text)) {
+    return false;
+  }
+  return !isAssistantHeartbeatAckForDisplay(message);
 }
 
 function buildSessionMessageDedupeKey(payload: SessionMessagePayload): string | null {
@@ -980,6 +1010,25 @@ function buildSessionMessageLiveEchoSignature(message: unknown): string | null {
   }
   try {
     return JSON.stringify([role, message.content ?? null, message.text ?? null]);
+  } catch {
+    return null;
+  }
+}
+
+function buildSessionMessageAssistantDisplaySignature(message: unknown): string | null {
+  if (!isRecord(message)) {
+    return null;
+  }
+  const role = typeof message.role === "string" ? message.role.toLowerCase() : "";
+  if (role !== "assistant") {
+    return null;
+  }
+  const text = extractText(message)?.trim();
+  if (text) {
+    return JSON.stringify([role, "text", text]);
+  }
+  try {
+    return JSON.stringify([role, "content", message.content ?? null, message.text ?? null]);
   } catch {
     return null;
   }
