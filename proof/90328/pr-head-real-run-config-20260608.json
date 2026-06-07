@@ -1,0 +1,46 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 19129,
+    "auth": {
+      "mode": "none"
+    },
+    "bind": "loopback",
+    "controlUi": {
+      "enabled": true,
+      "dangerouslyDisableDeviceAuth": true,
+      "allowInsecureAuth": true
+    }
+  },
+  "channels": {},
+  "plugins": {
+    "allow": [
+      "openai",
+      "codex"
+    ],
+    "bundledDiscovery": "compat"
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openai/gpt-5.5"
+      },
+      "models": {
+        "openai/gpt-5.5": {
+          "agentRuntime": {
+            "id": "codex"
+          }
+        }
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "name": "Main",
+        "model": {
+          "primary": "openai/gpt-5.5"
+        }
+      }
+    ]
+  }
+}
