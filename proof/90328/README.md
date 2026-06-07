@@ -1,44 +1,21 @@
 # PR #90328 current-head proof
 
-Current PR head: `e894e4b110c7563844d16ed4a006e28972dece8a`
+Current PR head verified: `93c00a0991be148f357f8b0706080883528b210d` (`Preserve explicit model aliases in picker labels`).
 
-This artifact proves the current #90328 head after the alias-preservation rebase.
+Evidence:
 
-## Files
+- `model-picker-openai-codex-current-head.png` — WebUI model picker visual proof showing `gpt-5.5 · OpenAI Codex`.
+- `models-list-current-head.json` — current-head Gateway metadata helper output showing canonical `provider: "openai"`, canonical model id `gpt-5.5`, and separate runtime metadata `agentRuntime.id = "codex"` / `label = "OpenAI Codex"`.
 
-- `model-picker-openai-codex-current-head.png` — current-head Control UI mock WebUI screenshot showing the Chat model picker option `gpt-5.5 · OpenAI Codex`.
-- `models-list-current-head.json` — current-head Gateway model metadata helper output showing canonical `id: "gpt-5.5"`, `provider: "openai"`, and `agentRuntime: { id: "codex", source: "model", label: "OpenAI Codex" }`.
+Current-head checks rerun on 2026-06-07:
 
-## Environment
-
-- Source checkout: `/tmp/openclaw-pr-90328-update`
-- Branch: `agent/xiaozhua/model-runtime-observability`
-- Head: `e894e4b110c7563844d16ed4a006e28972dece8a`
-- Mock WebUI server: `pnpm dev:ui:mock -- --host 127.0.0.1 --port 5193` (Vite bound `5194` because `5193` was occupied)
-- Screenshot automation: system Google Chrome via Playwright, no production Gateway involved.
-
-## Commands
-
-```bash
-cd /tmp/openclaw-pr-90328-update
-git rev-parse HEAD
-# e894e4b110c7563844d16ed4a006e28972dece8a
-
-pnpm dev:ui:mock -- --host 127.0.0.1 --port 5193
-# Open /chat?session=main, open the Chat model picker, verify `gpt-5.5 · OpenAI Codex`.
-
+```text
 node --import tsx /tmp/pr90328-current-head-proof/models-list-current-head.mjs
+# emitted models-list-current-head.json for head 93c00a0991be148f357f8b0706080883528b210d
+
+node scripts/run-vitest.mjs src/gateway/server-methods/models-list-result.test.ts ui/src/ui/chat-model-ref.test.ts --testNamePattern="models.list|agentRuntime|label|alias|OpenAI Codex"
+# gateway models-list-result: 10 passed
+# ui chat-model-ref focused group: 6 passed / 19 skipped
 ```
 
-The temporary mock catalog entry used for the screenshot supplied:
-
-```json
-{
-  "id": "gpt-5.5",
-  "name": "gpt-5.5",
-  "provider": "openai",
-  "agentRuntime": { "id": "codex", "label": "OpenAI Codex", "source": "configured" }
-}
-```
-
-The PR worktree was restored after capture; these proof files live only on this proof branch.
+The screenshot artifact is the visual model-picker proof for the same `gpt-5.5 · OpenAI Codex` UI behavior; current-head runtime metadata and UI label/alias behavior were revalidated with the helper and focused tests above after rebasing to `93c00a0991be148f357f8b0706080883528b210d`.
