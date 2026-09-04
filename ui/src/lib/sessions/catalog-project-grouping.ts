@@ -75,7 +75,7 @@ function isWindowsPath(value: string): boolean {
   return windowsPathRootKind(value) !== undefined;
 }
 
-export function catalogProjectPathIdentity(p: string): string {
+function catalogProjectPathIdentity(p: string): string {
   const value = isWindowsPath(p) ? (p.split(/[\\/]\.claude[\\/]worktrees[\\/]/i)[0] ?? p) : p;
   const rootKind = windowsPathRootKind(value);
   if (!rootKind) {
