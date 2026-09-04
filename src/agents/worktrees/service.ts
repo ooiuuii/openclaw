@@ -51,11 +51,14 @@ import {
   deleteRegistryWorktree,
   findLiveRegistryWorktreeByOwner,
   findLiveRegistryWorktreeByPath,
+  findRegistryWorktreeByPath,
   getRegistryWorktree,
   getRegistryWorktreeProvisionedPaths,
   getRegistryWorktreeProvisionedState,
+  hasWorktreeRetentionClaimRow,
   insertRegistryWorktree,
   listRegistryWorktrees,
+  setWorktreeRetentionClaimRow,
   updateRegistryWorktree,
   WorktreeRemovalContentionError,
 } from "./registry.js";
@@ -165,6 +168,7 @@ type RemoveWorktreeParams = WorktreeMutationGuard & {
   reason: string;
   allowSnapshotLoss?: boolean;
   claimToken?: string;
+  respectRetentionClaims?: boolean;
   runEndCleanup?: ManagedWorktreeRunEndCleanup;
 };
 const WORKTREE_CLEANUP_TARGET = 100;
@@ -1224,7 +1228,11 @@ export class ManagedWorktreeService {
     // opaque token makes the claim exclusive against competing removers; a caller
     // that already claimed (removeIfLossless) passes its token to keep one claim.
     const claimToken = params.claimToken ?? randomUUID();
-    claimWorktreeRemoval(this.env, { worktreeId: record.id, token: claimToken });
+    claimWorktreeRemoval(this.env, {
+      worktreeId: record.id,
+      token: claimToken,
+      respectRetentionClaims: params.respectRetentionClaims,
+    });
     try {
       record = await this.rebindLiveRepository(record, params);
       const state = await lockState(record);
@@ -1450,7 +1458,11 @@ export class ManagedWorktreeService {
     // Run-end cleanup must leave a durable outcome even when safety retains the checkout.
     // QA and operators observe this product-boundary fact through worktrees.list.
     try {
-      claimWorktreeRemoval(this.env, { worktreeId: id, token: claimToken });
+      claimWorktreeRemoval(this.env, {
+        worktreeId: id,
+        token: claimToken,
+        respectRetentionClaims: true,
+      });
     } catch (error) {
       if (error instanceof WorktreeRemovalContentionError) {
         if (error.kind === "finalized") {
@@ -1509,6 +1521,7 @@ export class ManagedWorktreeService {
         id,
         reason: "run-end",
         claimToken,
+        respectRetentionClaims: true,
         runEndCleanup: { outcome: "removed-lossless", at: this.now() },
       });
     } catch (error) {
@@ -1537,6 +1550,30 @@ export class ManagedWorktreeService {
     }
   }
 
+  setRetentionClaimByPath(
+    worktreePath: string,
+    owner: Pick<CreateManagedWorktreeParams, "ownerKind" | "ownerId">,
+    params: { claimId: string; active: boolean },
+  ): boolean {
+    const claimId = params.claimId.trim();
+    if (!claimId) {
+      throw new Error("worktree retention claim id is required");
+    }
+    const record = params.active
+      ? findLiveRegistryWorktreeByPath(this.env, worktreePath)
+      : findRegistryWorktreeByPath(this.env, worktreePath);
+    if (!record || !worktreeOwnerMatches(record, owner) || !record.ownerId) {
+      return false;
+    }
+    return setWorktreeRetentionClaimRow(this.env, {
+      worktreeId: record.id,
+      claimId,
+      claimOwner: `${record.ownerKind}:${record.ownerId}`,
+      active: params.active,
+      now: this.now(),
+    });
+  }
+
   async gc(params: ManagedWorktreeGcParams = {}): Promise<ManagedWorktreeGcResult> {
     const now = this.now();
     let removed: string[] = [];
@@ -1563,6 +1600,7 @@ export class ManagedWorktreeService {
           await this.remove({
             id: record.id,
             reason: retiredOwner ? "owner-gc" : "idle-gc",
+            respectRetentionClaims: true,
             commitGuard: () => this.assertOwnerAllowsCleanup(record, params, retiredOwner),
           });
           removed.push(record.id);
@@ -1603,6 +1641,9 @@ export class ManagedWorktreeService {
       record.ownerId !== undefined &&
       shouldProtectOwner?.(record.ownerKind, record.ownerId) === true
     ) {
+      return true;
+    }
+    if (hasWorktreeRetentionClaimRow(this.env, record.id)) {
       return true;
     }
     if (hasLiveWorktreeRunLease(this.env, record.id)) {
@@ -1703,6 +1744,7 @@ export class ManagedWorktreeService {
         await this.remove({
           id: record.id,
           reason: "limit-gc",
+          respectRetentionClaims: true,
           commitGuard: () => this.assertOwnerAllowsCleanup(record, params),
         });
       } catch (error) {
