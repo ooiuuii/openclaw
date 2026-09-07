@@ -1674,6 +1674,7 @@ export interface WorktreeRetentionClaims {
   claim_id: string;
   claim_owner: string;
   created_at: number;
+  released_at: number | null;
   updated_at: number;
   worktree_id: string;
 }
