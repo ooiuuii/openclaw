@@ -6022,6 +6022,10 @@ describe("package artifact reuse", () => {
     ).toContain("steps.prepublish_plugin_registry.outputs.manifest_sha256 != ''");
     for (const jobId of ["validate_docker_e2e", "validate_docker_lanes"]) {
       const job = workflowJob(LIVE_E2E_WORKFLOW, jobId);
+      expect(job.env).toMatchObject({
+        OPENCLAW_SELECTED_SHA: "${{ needs.validate_selected_ref.outputs.selected_sha }}",
+        OPENCLAW_TOOLING_SHA: "${{ needs.validate_selected_ref.outputs.workflow_sha }}",
+      });
       const registrySteps = (job.steps ?? []).filter((step) =>
         /^(Validate|Download) .*prerelease plugin registry/u.test(step.name ?? ""),
       );
@@ -6874,11 +6878,32 @@ describe("package artifact reuse", () => {
   it("shards broad native live tests instead of one serial live-all job", () => {
     const workflow = readFileSync(LIVE_E2E_WORKFLOW, "utf8");
     const retryHelper = readFileSync("scripts/ci-live-command-retry.sh", "utf8");
+    const nativeLiveJob = workflowJob(LIVE_E2E_WORKFLOW, "validate_live_provider_suites");
+    const selection = workflowStep(nativeLiveJob, "Select native live suite");
 
     expect(workflow).not.toContain("suite_id: live-all");
     expect(workflow).not.toContain("command: pnpm test:live\n");
     expect(workflow).toContain("suite_id: native-live-src-agents");
     expect(workflow).toContain("Checkout trusted live shard harness");
+    expect(selection.if).toContain("contains(matrix.profiles, inputs.release_test_profile)");
+    expect(selection.if).toContain("inputs.live_suite_filter == matrix.suite_id");
+    for (const stepName of [
+      "Checkout selected ref",
+      "Checkout trusted live shard harness",
+      "Setup Node environment",
+      "Setup trusted release harness",
+      "Hydrate live auth/profile inputs",
+      "Configure suite-specific env",
+      "Run ${{ matrix.label }}",
+    ]) {
+      expect(workflowStep(nativeLiveJob, stepName).if).toBe(
+        "steps.selection.outputs.run == 'true'",
+      );
+    }
+    expect(workflowStep(nativeLiveJob, "Setup trusted release harness")).toMatchObject({
+      uses: "./.release-harness/.github/actions/setup-release-harness",
+      with: { "node-version": "${{ env.NODE_VERSION }}" },
+    });
     expect(
       workflowMatrixEntry(
         LIVE_E2E_WORKFLOW,

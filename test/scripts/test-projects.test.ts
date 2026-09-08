@@ -531,7 +531,11 @@ describe("scripts/test-projects changed-target routing", () => {
     (scriptPath) => {
       expectChangedTargets(
         [scriptPath],
-        ["test/scripts/direct-run-entrypoints.test.ts", "test/scripts/lint-status.test.ts"],
+        [
+          "test/scripts/direct-run-entrypoints.test.ts",
+          "test/scripts/lint-status.test.ts",
+          "test/scripts/local-check-runtime.test.ts",
+        ],
       );
     },
   );
@@ -1190,6 +1194,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/authorized-beta-focused-evidence.test.ts",
         "test/scripts/clawhub-parent-authorization.test.ts",
         "test/scripts/clawhub-postpublish.test.ts",
+        "test/scripts/plugin-npm-extended-stable-workflow.test.ts",
         "test/scripts/release-candidate-checklist.test.ts",
         "test/scripts/release-no-push-workflow.test.ts",
         "test/scripts/release-plan-producer.test.ts",
@@ -2276,7 +2281,7 @@ describe("scripts/test-projects changed-target routing", () => {
   it("routes mac restart helpers through restart-mac owner tests", () => {
     expectChangedTargets(
       ["scripts/lib/restart-mac-gateway.sh"],
-      ["test/scripts/restart-mac.test.ts"],
+      ["test/scripts/build-and-run-mac.test.ts", "test/scripts/restart-mac.test.ts"],
     );
   });
 
