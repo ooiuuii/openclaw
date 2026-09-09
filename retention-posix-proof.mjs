@@ -163,6 +163,10 @@ async function controller(options) {
       assert.deepEqual(await sourceIdentity(repo), receipt.sourceBefore, "Source changed before worker launch");
       const child = await runChild(config, phase, env);
       receipt.children.push(child);
+      if (child.code !== 0) {
+        try { receipt.workerFailure = await readJson(path.join(root, `${phase}.failure.json`)); }
+        catch { /* A launch/import failure may precede the worker's structured diagnostic. */ }
+      }
       invariant(!child.timedOut && child.code === 0, `${phase} worker failed/timed out; this is setup/infrastructure failure, never behavioral RED; inspect its stderr/receipt`);
     }
     receipt.results = await readJson(path.join(root, "verify.result.json"));
@@ -360,7 +364,7 @@ async function worker(options) {
       for (const control of fixture.controls ?? []) {
         const beforeCleanup = await store.get(control.cardId);
         const gitStatusBeforeCleanup = await git(control.worktree.path, "status", "--porcelain=v1", "--untracked-files=all");
-        invariant(gitStatusBeforeCleanup === "", "Negative-control fixture must be Git-clean; dirty preservation is not artifact retention");
+        invariant(gitStatusBeforeCleanup === "", `Negative-control ${control.kind} fixture must be Git-clean; observed ${JSON.stringify(gitStatusBeforeCleanup)}. Dirty preservation is not artifact retention`);
         const expected = [{ path: control.reference.path, url: control.reference.url }];
         const referenceWasPresent = isDeepStrictEqual(artifactReferences(beforeCleanup), expected) && isDeepStrictEqual(beforeCleanup?.metadata?.artifacts, control.artifacts);
         await cleanupWorkboardCardWorktree({ store, worktrees: cleanupRuntime, card: beforeCleanup });
@@ -415,6 +419,9 @@ async function worker(options) {
         }
       }
     }
+  } catch (error) {
+    await json(path.join(config.root, `${options.child}.failure.json`), { phase: options.child, name: error.name, message: error.message });
+    throw error;
   } finally {
     changeEvents?.stop();
     sqlite.close();
