@@ -1,0 +1,73 @@
+name: PR111497 POSIX retention proof
+
+on:
+  push:
+    branches: [proof/pr111497-posix-20260909]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout proof recorder
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          path: harness
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: openclaw/openclaw
+          ref: 78a1e91fd1a9bfbe271c1b22d2bdc43476ebe4c3
+          persist-credentials: false
+          path: candidate
+      - name: Checkout exact pre-retention baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: openclaw/openclaw
+          ref: 20e0ed521c00fd38b1d4d003636fa4ddd3bf2066
+          persist-credentials: false
+          path: baseline
+      - name: Prepare supported Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.x
+      - name: Install pinned package manager and frozen dependencies
+        run: |
+          npm install --global pnpm@12.3.4 --ignore-scripts
+          pnpm --dir candidate install --frozen-lockfile
+          pnpm --dir baseline install --frozen-lockfile
+          git -C candidate diff --exit-code
+          git -C baseline diff --exit-code
+          df -h .
+      - name: Observe original loss on frozen baseline
+        run: |
+          set +e
+          node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/baseline" --expected-head 20e0ed521c00fd38b1d4d003636fa4ddd3bf2066 --scenario lifecycle --output-root "$GITHUB_WORKSPACE/proof/baseline"
+          proof_status=$?
+          set -e
+          test "$proof_status" -eq 1
+          node harness/assert-baseline-loss.mjs "$GITHUB_WORKSPACE/proof/baseline"
+      - name: Verify native symlink containment and negative controls
+        run: |
+          for lane in idle count size; do
+            node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/candidate" --expected-head 78a1e91fd1a9bfbe271c1b22d2bdc43476ebe4c3 --scenario containment --gc-lane "$lane" --output-root "$GITHUB_WORKSPACE/proof/containment"
+          done
+      - name: Upgrade a real baseline-created database and preserve its card
+        run: |
+          node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/candidate" --expected-head 78a1e91fd1a9bfbe271c1b22d2bdc43476ebe4c3 --seed-repo "$GITHUB_WORKSPACE/baseline" --expected-seed-head 20e0ed521c00fd38b1d4d003636fa4ddd3bf2066 --scenario lifecycle --output-root "$GITHUB_WORKSPACE/proof/upgrade"
+      - name: Prepare redacted receipt evidence
+        if: always()
+        run: node harness/summarize-proof.mjs
+      - name: Upload only redacted receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr111497-posix-and-upgrade-proof
+          path: proof-public/
+          if-no-files-found: error
+          retention-days: 30
