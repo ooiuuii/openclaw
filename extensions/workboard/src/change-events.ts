@@ -24,10 +24,13 @@ export function createWorkboardChangeEventService(
       try {
         await store.reconcileArtifactRetention();
       } catch (error) {
-        if (starting === generation) {
-          starting = undefined;
+        if (starting !== generation) {
+          return;
         }
-        throw error;
+        // Deferred cleanup must not disable change events or the retry that can recover it.
+        ctx.logger.warn(
+          `workboard artifact retention startup reconciliation failed; will retry: ${String(error)}`,
+        );
       }
       // stop() revokes pending startup before the owning SQLite store is closed.
       if (starting !== generation) {

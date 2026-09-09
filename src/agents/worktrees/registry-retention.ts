@@ -88,7 +88,7 @@ export function setWorktreeRetentionClaimRow(
         db,
         k
           .selectFrom("worktrees")
-          .select(["removed_at", "owner_kind", "owner_id"])
+          .select(["removed_at", "snapshot_ref", "owner_kind", "owner_id"])
           .where("id", "=", params.worktreeId),
       ).rows[0];
       if (!record) {
@@ -109,7 +109,9 @@ export function setWorktreeRetentionClaimRow(
         return !params.active;
       }
       if (params.active) {
-        if (record.removed_at !== null) {
+        // Enrollment may precede restoration, but cannot manufacture a recoverable
+        // identity for a checkout that disappeared without a recorded snapshot.
+        if (record.removed_at !== null && !record.snapshot_ref) {
           return false;
         }
         const removing = executeSqliteQuerySync(

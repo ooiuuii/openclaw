@@ -168,25 +168,45 @@ describe("managed worktree retention claims", () => {
     },
   );
 
-  it("resolves only the exact owner and keeps other owners from changing claims", async () => {
-    const owner = { ownerKind: "workboard", ownerId: "card-owned" } as const;
-    const created = await service.create({ repoRoot: repo, name: "owned", ...owner });
-    expect(service.resolveRetentionTargetByPath(created.path, owner)).toBe(created.id);
-    for (const other of [
-      { ownerKind: "workboard", ownerId: "another-card" },
-      { ownerKind: "session", ownerId: owner.ownerId },
-    ] as const) {
-      expect(service.resolveRetentionTargetByPath(created.path, other)).toBeUndefined();
-      for (const active of [true, false]) {
-        expect(service.setRetentionClaim(created.id, other, { claimId: "owned", active })).toBe(
-          false,
-        );
+  it.each([false, true])(
+    "resolves only the exact owner and keeps other owners from changing claims (removed: %s)",
+    async (removed) => {
+      const owner = { ownerKind: "workboard", ownerId: "card-owned" } as const;
+      const created = await service.create({ repoRoot: repo, name: "owned", ...owner });
+      if (removed) {
+        await service.remove({ id: created.id, reason: "test-explicit-removal" });
       }
-    }
-    expect(service.setRetentionClaim(created.id, owner, { claimId: "owned", active: true })).toBe(
-      true,
+      expect(service.resolveRetentionTargetByPath(created.path, owner)).toBe(created.id);
+      for (const other of [
+        { ownerKind: "workboard", ownerId: "another-card" },
+        { ownerKind: "session", ownerId: owner.ownerId },
+      ] as const) {
+        expect(service.resolveRetentionTargetByPath(created.path, other)).toBeUndefined();
+        for (const active of [true, false]) {
+          expect(service.setRetentionClaim(created.id, other, { claimId: "owned", active })).toBe(
+            false,
+          );
+        }
+      }
+      expect(service.setRetentionClaim(created.id, owner, { claimId: "owned", active: true })).toBe(
+        true,
+      );
+      if (removed) {
+        await service.restore({ id: created.id });
+      }
+      expect(await service.removeIfLossless(created.id)).toBe(false);
+    },
+  );
+
+  it("does not enroll a checkout lost without a snapshot", async () => {
+    const owner = { ownerKind: "workboard", ownerId: "card-lost" } as const;
+    const created = await service.create({ repoRoot: repo, name: "lost", ...owner });
+    await fs.rm(created.path, { recursive: true, force: true });
+    await service.gc();
+    expect(service.resolveRetentionTargetByPath(created.path, owner)).toBeUndefined();
+    expect(service.setRetentionClaim(created.id, owner, { claimId: "new", active: true })).toBe(
+      false,
     );
-    expect(await service.removeIfLossless(created.id)).toBe(false);
   });
 
   it("keeps released generations through restore and prunes them only with registry identity", async () => {
@@ -198,7 +218,13 @@ describe("managed worktree retention claims", () => {
     expect(
       (await service.remove({ id: created.id, reason: "test-explicit-removal" })).removed,
     ).toBe(true);
-    expect(service.resolveRetentionTargetByPath(created.path, owner)).toBeUndefined();
+    expect(service.resolveRetentionTargetByPath(created.path, owner)).toBe(created.id);
+    expect(service.setRetentionClaim(created.id, owner, { claimId: "new", active: true })).toBe(
+      true,
+    );
+    expect(service.setRetentionClaim(created.id, owner, { claimId: "new", active: false })).toBe(
+      true,
+    );
     expect(service.setRetentionClaim(created.id, owner, { claimId: "old", active: false })).toBe(
       true,
     );
@@ -216,9 +242,11 @@ describe("managed worktree retention claims", () => {
     expect((await service.gc()).snapshotsPruned).toBe(0);
     expect(
       database
-        .prepare("SELECT claim_id FROM worktree_retention_claims WHERE worktree_id = ?")
+        .prepare(
+          "SELECT claim_id FROM worktree_retention_claims WHERE worktree_id = ? ORDER BY claim_id",
+        )
         .all(created.id),
-    ).toEqual([{ claim_id: "old" }]);
+    ).toEqual([{ claim_id: "new" }, { claim_id: "old" }]);
     database.exec("DROP TRIGGER retain_registry_identity");
     expect((await service.gc()).snapshotsPruned).toBe(1);
     expect(

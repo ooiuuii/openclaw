@@ -51,6 +51,7 @@ import {
   deleteRegistryWorktree,
   findLiveRegistryWorktreeByOwner,
   findLiveRegistryWorktreeByPath,
+  findRegistryWorktreeByPath,
   getRegistryWorktree,
   getRegistryWorktreeProvisionedPaths,
   getRegistryWorktreeProvisionedState,
@@ -1553,8 +1554,15 @@ export class ManagedWorktreeService {
     worktreePath: string,
     owner: Pick<CreateManagedWorktreeParams, "ownerKind" | "ownerId">,
   ): string | undefined {
-    const record = findLiveRegistryWorktreeByPath(this.env, worktreePath);
-    return record?.ownerId && worktreeOwnerMatches(record, owner) ? record.id : undefined;
+    const record = findRegistryWorktreeByPath(this.env, worktreePath);
+    // A persisted reference can predate enrollment while its checkout is removed.
+    // Protect that snapshot-backed identity before restore makes it GC-eligible.
+    // Restore remains responsible for verifying the snapshot's actual recoverability.
+    return record?.ownerId &&
+      worktreeOwnerMatches(record, owner) &&
+      (record.removedAt === undefined || Boolean(record.snapshotRef))
+      ? record.id
+      : undefined;
   }
 
   setRetentionClaim(

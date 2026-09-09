@@ -162,8 +162,9 @@ The runtime config snapshot, durable plugin-scoped storage, worktree retention, 
     }
     ```
 
-    This read-only lookup returns the immutable registry ID, or `undefined` if the path
-    is not a live worktree owned by that card. Persist that ID and a fresh `claimId` in
+    This read-only lookup returns the immutable registry ID for a card-owned live worktree
+    or a removed worktree with a recorded snapshot reference; otherwise it returns
+    `undefined`. Persist that ID and a fresh `claimId` in
     the card owner's prepared generation before acquisition. Claim IDs must be nonempty.
     The following `generation` values must come from that durable record; replaying the
     same preparation uses the same ID, while retrying a cancelled mutation needs a new one:
@@ -192,12 +193,17 @@ The runtime config snapshot, durable plugin-scoped storage, worktree retention, 
     Claims are keyed by worktree ID and claim ID. Release is idempotent and terminal,
     even if it arrives before acquisition: that generation can never become active again.
     A later reference uses a new generation; an ordinary card edit can reuse its still-active
-    generation. Acquisition returns `false` for a released claim, removed worktree, or
-    owner mismatch, and throws if removal is in progress. Release of a permanently deleted
+    generation. Acquisition returns `false` for a released claim, unknown registry ID,
+    removed worktree without a recorded snapshot reference, or owner mismatch, and throws
+    if removal is in progress. Release of a permanently deleted
     registry ID succeeds without recreating a row; an owner mismatch returns `false`.
 
     Active claims survive Gateway restarts and protect automatic run-end, idle, count,
-    and size cleanup. Explicit operator removal still applies. Released records remain
+    and size cleanup. An existing reference can enroll while its checkout is removed,
+    protecting the same identity if it is restored. Enrollment does not verify Git objects,
+    provisioning metadata, repository availability, or successful recovery; restore owns
+    those checks. Explicit operator removal and existing removed-snapshot expiry still
+    apply. Released records remain
     through checkout removal and restore, and are pruned with their registry identity.
     See [Workboard artifact retention](/reference/database-schemas#workboard-artifact-retention)
     for recovery and downgrade boundaries.

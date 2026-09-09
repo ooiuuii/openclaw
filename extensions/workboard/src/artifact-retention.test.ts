@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { IDLE_GC_MS, ManagedWorktreeService } from "openclaw/plugin-sdk/plugin-test-runtime";
@@ -201,7 +202,7 @@ describe("Workboard artifact worktree retention", () => {
     });
   }
 
-  async function createLegacyArtifactCard(name: string) {
+  async function createLegacyArtifactCard(name: string, artifactPath = "dist/report.txt") {
     const legacySqlite = createWorkboardSqliteStores({ env });
     try {
       const legacyStore = new WorkboardStore(legacySqlite.cards, {
@@ -228,8 +229,9 @@ describe("Workboard artifact worktree retention", () => {
         },
         workspaceAccess: { unrestricted: true },
       });
-      await writeArtifact(worktree.path);
-      await legacyStore.addArtifact(card.id, { path: "dist/report.txt" });
+      await fs.mkdir(path.dirname(path.join(worktree.path, artifactPath)), { recursive: true });
+      await fs.writeFile(path.join(worktree.path, artifactPath), "report");
+      await legacyStore.addArtifact(card.id, { path: artifactPath });
       return { card, worktree };
     } finally {
       legacySqlite.close();
@@ -288,10 +290,11 @@ describe("Workboard artifact worktree retention", () => {
     await expect(fs.stat(worktree.path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("skips legacy cards whose worktrees were already removed", async () => {
+  it("skips legacy worktrees missing without a recovery snapshot", async () => {
     const { card, worktree } = await createLegacyArtifactCard("removed-legacy-artifact");
     await service.release(worktree.id);
-    await expect(service.removeIfLossless(worktree.id)).resolves.toBe(true);
+    await fs.rm(worktree.path, { recursive: true, force: true });
+    await service.gc();
 
     const cards = restartWithRetentionStore();
 
@@ -305,35 +308,42 @@ describe("Workboard artifact worktree retention", () => {
     });
   });
 
-  it("keeps a referenced worktree protected when restored after startup reconciliation", async () => {
-    const { card, worktree } = await createCardWorktree("restored-after-restart");
-    // Explicit removal snapshots non-ignored files; use one that restore actually recovers.
-    const artifact = path.join(worktree.path, "report.txt");
-    await fs.writeFile(artifact, "report");
-    await store.addArtifact(card.id, { path: "report.txt" });
-    await service.release(worktree.id);
-    await service.remove({ id: worktree.id, reason: "retention-test-operator-remove" });
-    await expect(fs.stat(worktree.path)).rejects.toMatchObject({ code: "ENOENT" });
+  it.each([false, true])(
+    "protects restored artifacts when first enrollment was before removal: %s",
+    async (enrolled) => {
+      const { card, worktree } = enrolled
+        ? await createCardWorktree("restored-after-restart")
+        : await createLegacyArtifactCard("restored-after-restart", "report.txt");
+      // Explicit removal snapshots non-ignored files; use one that restore actually recovers.
+      const artifact = path.join(worktree.path, "report.txt");
+      await fs.writeFile(artifact, "report");
+      if (enrolled) {
+        await store.addArtifact(card.id, { path: "report.txt" });
+      }
+      await service.release(worktree.id);
+      await service.remove({ id: worktree.id, reason: "retention-test-operator-remove" });
+      await expect(fs.stat(worktree.path)).rejects.toMatchObject({ code: "ENOENT" });
 
-    await restartWithRetentionStore().reconcileArtifactRetention();
-    await expect(store.get(card.id)).resolves.toMatchObject({
-      metadata: { artifacts: [{ path: "report.txt" }] },
-    });
-    const restored = await service.restore({ id: worktree.id });
-    expect(restored.id).toBe(worktree.id);
-    await expect(fs.readFile(artifact, "utf8")).resolves.toBe("report");
-    expect((await service.gc({ limits: { maxCount: 0 } })).removed).toEqual([]);
-    await expect(fs.readFile(artifact, "utf8")).resolves.toBe("report");
+      await restartWithRetentionStore().reconcileArtifactRetention();
+      await expect(store.get(card.id)).resolves.toMatchObject({
+        metadata: { artifacts: [{ path: "report.txt" }] },
+      });
+      const restored = await service.restore({ id: worktree.id });
+      expect(restored.id).toBe(worktree.id);
+      await expect(fs.readFile(artifact, "utf8")).resolves.toBe("report");
+      expect((await service.gc({ limits: { maxCount: 0 } })).removed).toEqual([]);
+      await expect(fs.readFile(artifact, "utf8")).resolves.toBe("report");
 
-    const persisted = await store.get(card.id);
-    await store.update(card.id, {
-      metadata: {
-        ...persisted?.metadata,
-        artifacts: [{ url: "https://example.invalid/report.txt" }],
-      },
-    });
-    expect((await service.gc({ limits: { maxCount: 0 } })).removed).toEqual([worktree.id]);
-  });
+      const persisted = await store.get(card.id);
+      await store.update(card.id, {
+        metadata: {
+          ...persisted?.metadata,
+          artifacts: [{ url: "https://example.invalid/report.txt" }],
+        },
+      });
+      expect((await service.gc({ limits: { maxCount: 0 } })).removed).toEqual([worktree.id]);
+    },
+  );
 
   it("reports a committed mutation while release remains durably retryable", async () => {
     const delegate = retentionWorktrees();
@@ -440,8 +450,8 @@ describe("Workboard artifact worktree retention", () => {
     await store.addArtifact(card.id, { path: "dist/report.txt" });
     const next = await createSecondWorktree(card.id, previous.id, "intermediate-artifact");
     const delegate = retentionWorktrees();
-    const releaseStarted = Promise.withResolvers<void>();
-    const resumeRelease = Promise.withResolvers<void>();
+    const releaseStarted = createDeferred<void>();
+    const resumeRelease = createDeferred<void>();
     let pauseFirstRelease = true;
     replaceRetentionRuntime({
       ...delegate,
@@ -491,8 +501,8 @@ describe("Workboard artifact worktree retention", () => {
         throw new Error("expected persisted card");
       }
       const delegate = retentionWorktrees();
-      const acquisitionStarted = Promise.withResolvers<void>();
-      const resumeAcquisition = Promise.withResolvers<void>();
+      const acquisitionStarted = createDeferred<void>();
+      const resumeAcquisition = createDeferred<void>();
       replaceRetentionRuntime({
         ...delegate,
         async setRetentionClaim(params) {
@@ -513,7 +523,10 @@ describe("Workboard artifact worktree retention", () => {
           card: {
             ...original.card,
             updatedAt: original.card.updatedAt + 1,
-            metadata: { ...original.card.metadata, artifacts: [{ path: "dist/report.txt" }] },
+            metadata: {
+              ...original.card.metadata,
+              artifacts: [{ id: "report", createdAt: now, path: "dist/report.txt" }],
+            },
           },
         },
         original.card.updatedAt,
@@ -548,8 +561,8 @@ describe("Workboard artifact worktree retention", () => {
       throw new Error("expected persisted card");
     }
     const delegate = retentionWorktrees();
-    const acquisitionFinished = Promise.withResolvers<void>();
-    const resumeCommit = Promise.withResolvers<void>();
+    const acquisitionFinished = createDeferred<void>();
+    const resumeCommit = createDeferred<void>();
     replaceRetentionRuntime({
       ...delegate,
       async setRetentionClaim(params) {
@@ -568,7 +581,10 @@ describe("Workboard artifact worktree retention", () => {
         card: {
           ...original.card,
           updatedAt: original.card.updatedAt + 1,
-          metadata: { ...original.card.metadata, artifacts: [{ path: "dist/report.txt" }] },
+          metadata: {
+            ...original.card.metadata,
+            artifacts: [{ id: "report", createdAt: now, path: "dist/report.txt" }],
+          },
         },
       },
       original.card.updatedAt,
