@@ -44,7 +44,15 @@ export const WORKBOARD_ARTIFACT_RETENTION_SCHEMA = `
 
 async function retainedWorkspacePath(card: WorkboardCard | undefined): Promise<string | undefined> {
   const workspace = card?.metadata?.automation?.workspace;
-  if (!card || card.metadata?.archivedAt || workspace?.kind !== "worktree" || !workspace.path) {
+  // A worktree request also names its source checkout before/after materialization.
+  // Only materialized managed workspaces carry sourcePath; owner/identity checks still follow.
+  if (
+    !card ||
+    card.metadata?.archivedAt ||
+    workspace?.kind !== "worktree" ||
+    !workspace.path ||
+    !workspace.sourcePath
+  ) {
     return undefined;
   }
   const artifactPaths = (card.metadata?.artifacts ?? []).flatMap((artifact) =>

@@ -47,7 +47,7 @@ describe("Workboard artifact worktree retention", () => {
     await git(repo, "config", "user.name", "OpenClaw Test");
     await git(repo, "config", "user.email", "openclaw-test@example.invalid");
     await fs.writeFile(path.join(repo, "README.md"), "base\n");
-    await fs.writeFile(path.join(repo, ".gitignore"), "dist/\n");
+    await fs.writeFile(path.join(repo, ".gitignore"), "/dist\n");
     await git(repo, "add", "README.md", ".gitignore");
     await git(repo, "commit", "-m", "initial");
     const remote = path.join(root, "remote.git");
@@ -247,6 +247,10 @@ describe("Workboard artifact worktree retention", () => {
     await fs.symlink(worktree.path, alias, process.platform === "win32" ? "junction" : "dir");
     await store.addArtifact(card.id, { path: path.join(alias, "dist", "report.txt") });
     expect((await sqlite.cards.lookup(card.id))?.card.metadata?.artifacts).toHaveLength(1);
+    const edited = await store.update(card.id, {
+      workspace: { kind: "worktree", path: worktree.path },
+    });
+    expect(edited.metadata?.automation?.workspace?.sourcePath).toBe(repo);
 
     const restarted = new ManagedWorktreeService({ env, now: () => now });
     await cleanupCardWorktree(card.id, restarted);
@@ -623,6 +627,57 @@ describe("Workboard artifact worktree retention", () => {
       await updateResult;
       competing.close();
     }
+  });
+
+  it("allows local artifacts on the source checkout before worktree materialization", async () => {
+    const card = await store.create({
+      title: "Source checkout artifact",
+      workspace: { kind: "worktree", path: repo, branch: "main" },
+      workspaceAccess: { unrestricted: true },
+    });
+
+    await expect(store.addArtifact(card.id, { path: "README.md" })).resolves.toMatchObject({
+      metadata: { artifacts: [{ path: "README.md" }] },
+    });
+    expect(await fs.readFile(path.join(repo, "README.md"), "utf8")).toBe("base\n");
+  });
+
+  it("returns to the source checkout after cleaning an outbound artifact alias", async () => {
+    const { card, worktree } = await createCardWorktree("outbound-artifact-alias");
+    const outsideDir = path.join(root, "shared");
+    const outsideFile = path.join(outsideDir, "report.txt");
+    await fs.mkdir(outsideDir);
+    await fs.writeFile(outsideFile, "outside report\n");
+    await fs.symlink(
+      outsideDir,
+      path.join(worktree.path, "dist"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await store.addArtifact(card.id, { path: "dist/report.txt" });
+
+    const { stdout } = await execFileAsync("git", ["-C", worktree.path, "status", "--porcelain"]);
+    expect(stdout.trim()).toBe("");
+    await expect(cleanupCardWorktree(card.id)).resolves.toBeUndefined();
+    expect(
+      service.listRegistryRecords().find((record) => record.id === worktree.id)?.removedAt,
+    ).toBe(now);
+    await expect(fs.stat(path.join(worktree.path, ".git"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    // Git for Windows can leave an ignored junction directory after deregistering the worktree.
+    if (process.platform !== "win32") {
+      await expect(fs.stat(worktree.path)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(await fs.readFile(outsideFile, "utf8")).toBe("outside report\n");
+    const cleaned = await store.get(card.id);
+    expect(cleaned?.metadata?.automation?.workspace).toEqual({
+      kind: "worktree",
+      path: repo,
+      branch: "main",
+    });
+    expect(cleaned?.metadata?.artifacts).toEqual([
+      expect.objectContaining({ path: "dist/report.txt" }),
+    ]);
   });
 
   it("does not claim URL-only or outside-worktree artifacts", async () => {
