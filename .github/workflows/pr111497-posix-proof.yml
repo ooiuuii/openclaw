@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: openclaw/openclaw
-          ref: 78a1e91fd1a9bfbe271c1b22d2bdc43476ebe4c3
+          ref: 849b9156c0d8ca5a9fe7d6252edff7a6b68edb16
           persist-credentials: false
           path: candidate
       - name: Checkout exact pre-retention baseline
@@ -55,11 +55,11 @@ jobs:
       - name: Verify native symlink containment and negative controls
         run: |
           for lane in idle count size; do
-            node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/candidate" --expected-head 78a1e91fd1a9bfbe271c1b22d2bdc43476ebe4c3 --scenario containment --gc-lane "$lane" --output-root "$GITHUB_WORKSPACE/proof/containment"
+            node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/candidate" --expected-head 849b9156c0d8ca5a9fe7d6252edff7a6b68edb16 --scenario containment --gc-lane "$lane" --output-root "$GITHUB_WORKSPACE/proof/containment"
           done
       - name: Upgrade a real baseline-created database and preserve its card
         run: |
-          node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/candidate" --expected-head 78a1e91fd1a9bfbe271c1b22d2bdc43476ebe4c3 --seed-repo "$GITHUB_WORKSPACE/baseline" --expected-seed-head 20e0ed521c00fd38b1d4d003636fa4ddd3bf2066 --scenario lifecycle --output-root "$GITHUB_WORKSPACE/proof/upgrade"
+          node harness/retention-posix-proof.mjs --repo "$GITHUB_WORKSPACE/candidate" --expected-head 849b9156c0d8ca5a9fe7d6252edff7a6b68edb16 --seed-repo "$GITHUB_WORKSPACE/baseline" --expected-seed-head 20e0ed521c00fd38b1d4d003636fa4ddd3bf2066 --scenario lifecycle --output-root "$GITHUB_WORKSPACE/proof/upgrade"
       - name: Prepare redacted receipt evidence
         if: always()
         run: node harness/summarize-proof.mjs
