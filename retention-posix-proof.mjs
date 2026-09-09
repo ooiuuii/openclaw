@@ -261,7 +261,8 @@ async function worker(options) {
       await git(repo, "config", "user.name", "OpenClaw Synthetic Proof");
       await git(repo, "config", "user.email", "proof@example.invalid");
       await fs.writeFile(path.join(repo, "README.md"), "synthetic fixture\n", { flag: "wx" });
-      await fs.writeFile(path.join(repo, ".gitignore"), "dist/\n", { flag: "wx" });
+      // A trailing slash excludes directories but not the outbound symlink named dist.
+      await fs.writeFile(path.join(repo, ".gitignore"), "/dist\n", { flag: "wx" });
       await git(repo, "add", "README.md", ".gitignore");
       await git(repo, "commit", "-m", "Create synthetic artifact retention fixture");
       const remote = path.join(config.root, "fixture-remote.git");
@@ -358,12 +359,14 @@ async function worker(options) {
       }
       for (const control of fixture.controls ?? []) {
         const beforeCleanup = await store.get(control.cardId);
+        const gitStatusBeforeCleanup = await git(control.worktree.path, "status", "--porcelain=v1", "--untracked-files=all");
+        invariant(gitStatusBeforeCleanup === "", "Negative-control fixture must be Git-clean; dirty preservation is not artifact retention");
         const expected = [{ path: control.reference.path, url: control.reference.url }];
         const referenceWasPresent = isDeepStrictEqual(artifactReferences(beforeCleanup), expected) && isDeepStrictEqual(beforeCleanup?.metadata?.artifacts, control.artifacts);
         await cleanupWorkboardCardWorktree({ store, worktrees: cleanupRuntime, card: beforeCleanup });
         const afterCleanup = await store.get(control.cardId);
         const outsideHash = hash(await fs.readFile(control.outsideFile));
-        check(`posix-${control.kind}-does-not-pin-unrelated-checkout`, referenceWasPresent && isDeepStrictEqual(afterCleanup?.metadata?.artifacts, control.artifacts) && !(await exists(control.worktree.path)) && outsideHash === artifactDigest, { checkoutRemoved: !(await exists(control.worktree.path)), outsideSha256: outsideHash, expectedReference: control.reference, referenceWasPresent, artifactsBefore: beforeCleanup?.metadata?.artifacts, artifactsAfter: afterCleanup?.metadata?.artifacts });
+        check(`posix-${control.kind}-does-not-pin-unrelated-checkout`, referenceWasPresent && isDeepStrictEqual(afterCleanup?.metadata?.artifacts, control.artifacts) && !(await exists(control.worktree.path)) && outsideHash === artifactDigest, { gitStatusBeforeCleanup, checkoutRemoved: !(await exists(control.worktree.path)), outsideSha256: outsideHash, expectedReference: control.reference, referenceWasPresent, artifactsBefore: beforeCleanup?.metadata?.artifacts, artifactsAfter: afterCleanup?.metadata?.artifacts });
       }
       if (config.scenario === "legacy-restore") {
         invariant(typeof store.reconcileArtifactRetention === "function", "Legacy reconciliation entry unavailable");
