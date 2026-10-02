@@ -157,10 +157,16 @@ function collectPreparedFilePaths(reader: PreparedFileReader = { existsSync, rea
   };
 }
 
+export function collectPreparedPrepackErrorsFromDisk(
+  reader: PreparedFileReader = { existsSync, readdirSync },
+): string[] {
+  const preparedFiles = collectPreparedFilePaths(reader);
+  return collectPreparedPrepackErrors(preparedFiles.files, preparedFiles.assets);
+}
+
 function ensurePreparedArtifacts(): void {
   try {
-    const preparedFiles = collectPreparedFilePaths();
-    const errors = collectPreparedPrepackErrors(preparedFiles.files, preparedFiles.assets);
+    const errors = collectPreparedPrepackErrorsFromDisk();
     if (errors.length === 0) {
       console.error("prepack: using existing prepared artifacts.");
       return;
@@ -260,22 +266,14 @@ function runPnpm(args: string[], env: NodeJS.ProcessEnv): void {
   run(command.command, command.args, { ...command.options, env });
 }
 
-function runBuildSmoke(): void {
-  run(process.execPath, ["--import", "tsx", "scripts/test-built-bundled-channel-entry-smoke.mts"]);
-}
-
-async function writeDistInventory(): Promise<void> {
-  await writePackageDistInventoryForPublish(process.cwd());
-}
-
 export async function preparePrepackArtifacts(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   ensurePreparedArtifacts();
-  runBuildSmoke();
+  run(process.execPath, ["--import", "tsx", "scripts/test-built-bundled-channel-entry-smoke.mts"]);
   // The docs-map receipt serializes source-mutating pack lifecycles before the
   // changelog is touched, so concurrent packs cannot restore each other's files.
   await preparePackageDocsMap(process.cwd());
   try {
-    await writeDistInventory();
+    await writePackageDistInventoryForPublish(process.cwd());
     await preparePackageManifest(process.cwd());
     await preparePackageChangelog(process.cwd(), {
       allowUnreleased: resolvePrepackAllowUnreleasedChangelog(env),
@@ -305,6 +303,8 @@ async function main(): Promise<void> {
   // Preserve those artifacts while still running the complete packaging lifecycle.
   if (buildEnv[PREPARED_RELEASE_ENV]?.trim() !== "1") {
     runPnpm(["build:package"], buildEnv);
+  } else {
+    runPnpm(["update:compat:check"], buildEnv);
   }
   await preparePrepackArtifacts(buildEnv);
 }

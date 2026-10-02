@@ -1,12 +1,13 @@
 import path from "node:path";
 import { withTimeout } from "../../infra/fs-safe.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type {
   WorkerDesktopApp,
   WorkerDesktopEndpoint,
   WorkerSshEndpoint,
 } from "../../plugins/types.js";
-import type { DesktopRfbAttachment } from "../desktop/attachment.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import {
   createDesktopSessionRegistry,
   DesktopSessionStaleOwnerError,
@@ -31,12 +32,7 @@ import {
 
 const PASSWORD_READ_TIMEOUT_MS = 20_000;
 const APP_LAUNCH_TIMEOUT_MS = 30_000;
-
-const REMOTE_DESKTOP_READY_SCRIPT = String.raw`set -eu
-printf '%s\n' '${WORKER_TUNNEL_READY_MARKER}'
-trap 'exit 0' HUP INT TERM
-while :; do sleep 3600; done
-`;
+const log = createSubsystemLogger("gateway/desktop");
 
 type DesktopAcquireRequest = {
   environmentId: string;
@@ -46,11 +42,10 @@ type DesktopAcquireRequest = {
   resolveIdentity: WorkerSshIdentityResolver;
 };
 
-type DesktopAcquireResult = { attachment: DesktopRfbAttachment; vncPassword?: string };
+type DesktopAcquireResult = Awaited<ReturnType<DesktopSessionRegistry["acquire"]>>;
 
 type DesktopAppLaunchEntry = {
   environmentId: string;
-  appId: WorkerDesktopApp["id"];
   ownerEpoch: number;
   abortController: AbortController;
   operation: Promise<void>;
@@ -69,6 +64,21 @@ function successful(result: Awaited<ReturnType<WorkerSshRunner["run"]>>): boolea
   return result.termination === "exit" && result.code === 0;
 }
 
+function desktopSshCommand(prepared: PreparedWorkerSsh, argv: readonly string[]): string[] {
+  return [
+    "ssh",
+    ...workerSshOptions(prepared, { forwarding: "disabled" }),
+    "-a",
+    "-x",
+    "-T",
+    "-p",
+    String(prepared.port),
+    "--",
+    prepared.sshTarget,
+    workerSshRemoteCommand(argv),
+  ];
+}
+
 /** Owns worker-specific desktop SSH acquisition and app launch processes. */
 export function createWorkerDesktopTunnels(deps: {
   runner: WorkerSshRunner;
@@ -80,73 +90,50 @@ export function createWorkerDesktopTunnels(deps: {
   const sessions = deps.registry ?? createDesktopSessionRegistry({ lingerMs: deps.lingerMs });
   const appLaunches = new Map<string, DesktopAppLaunchEntry>();
 
-  const appLaunchKey = (environmentId: string, appId: WorkerDesktopApp["id"]) =>
-    `${environmentId}\0${appId}`;
-
-  const stopAppLaunches = async (environmentId: string, ownerEpoch?: number): Promise<void> => {
-    const matching = [...appLaunches.values()].filter(
-      (entry) =>
-        entry.environmentId === environmentId &&
-        (ownerEpoch === undefined || entry.ownerEpoch === ownerEpoch),
-    );
+  const stopAppLaunches = async (
+    matches: (entry: DesktopAppLaunchEntry) => boolean,
+    reason: "stopped" | "replaced",
+  ): Promise<void> => {
+    const matching = [...appLaunches.values()].filter(matches);
     for (const entry of matching) {
-      entry.abortController.abort(new Error("Worker desktop app launch owner stopped"));
+      entry.abortController.abort(new Error(`Worker desktop app launch owner ${reason}`));
     }
     await Promise.allSettled(matching.map((entry) => entry.operation));
   };
 
-  const claimOwnerEpoch = (environmentId: string, ownerEpoch: number): boolean => {
-    try {
-      return sessions.claimOwnerEpoch(environmentId, ownerEpoch);
-    } catch (error) {
-      if (error instanceof DesktopSessionStaleOwnerError) {
-        throw new Error("Worker desktop owner epoch is stale", { cause: error });
-      }
-      throw error;
-    }
-  };
-
-  const stopReplacedAppLaunches = async (
-    environmentId: string,
-    ownerEpoch: number,
-  ): Promise<void> => {
-    const staleLaunches = [...appLaunches.values()].filter(
+  const stopReplacedAppLaunches = (environmentId: string, ownerEpoch: number) =>
+    stopAppLaunches(
       (entry) => entry.environmentId === environmentId && entry.ownerEpoch < ownerEpoch,
+      "replaced",
     );
-    for (const entry of staleLaunches) {
-      entry.abortController.abort(new Error("Worker desktop app launch owner replaced"));
-    }
-    await Promise.allSettled(staleLaunches.map((entry) => entry.operation));
-  };
-
-  const fenceReplacedOwners = async (environmentId: string, ownerEpoch: number): Promise<void> => {
-    await joinWorkerTunnelStops([
-      sessions.stopSuperseded(environmentId, ownerEpoch),
-      stopReplacedAppLaunches(environmentId, ownerEpoch),
-    ]);
-  };
 
   const createSessionHooks = (request: DesktopAcquireRequest) => {
     let prepared: PreparedWorkerSsh | undefined;
     let child: WorkerSshProcess | undefined;
+    let stopRequested = false;
 
     const start = async (
       isCurrent: () => boolean,
       stopOwner: () => Promise<void>,
     ): Promise<DesktopAcquireResult> => {
-      if (!isCurrent()) {
-        throw new Error("Worker desktop tunnel stopped before connecting");
-      }
+      const assertCurrent = () => {
+        if (
+          !isCurrent() ||
+          !sessions.isOwnerEpochCurrent(request.environmentId, request.ownerEpoch)
+        ) {
+          throw new Error("Worker desktop tunnel stopped before connecting");
+        }
+      };
+      assertCurrent();
       prepared = await prepareWorkerSsh({
+        assertCurrent,
         ssh: request.ssh,
         pinnedHostKey: request.ssh.hostKey,
         resolveIdentity: request.resolveIdentity,
         // macOS Unix sockets allow 103 bytes; share one short private directory with SSH credentials.
         temporaryDirectoryPrefix: "/tmp/openclaw-worker-desktop-",
       });
-      if (!isCurrent()) {
-        throw new Error("Worker desktop tunnel stopped before connecting");
-      }
+      assertCurrent();
       const localSocketPath = path.join(path.dirname(prepared.knownHostsPath), "desktop.sock");
       child = deps.runner.start(
         [
@@ -155,6 +142,13 @@ export function createWorkerDesktopTunnels(deps: {
           "-a",
           "-x",
           "-T",
+          "-N",
+          "-n",
+          "-o",
+          "PermitLocalCommand=yes",
+          "-o",
+          // OpenSSH runs this after the pinned connection and local forward are ready.
+          `LocalCommand=printf '${WORKER_TUNNEL_READY_MARKER}\\n'`,
           "-o",
           "ServerAliveInterval=15",
           "-o",
@@ -167,40 +161,31 @@ export function createWorkerDesktopTunnels(deps: {
           String(prepared.port),
           "--",
           prepared.sshTarget,
-          workerSshRemoteCommand(["sh", "-s"]),
         ],
         workerSshCommandOptions({
-          input: REMOTE_DESKTOP_READY_SCRIPT,
           timeoutMs: Number.MAX_SAFE_INTEGER,
         }),
       );
-      const startedChild = child;
-      void startedChild.exited.then(() => {
+      void child.exited.then(({ code, signal }) => {
+        try {
+          // Record the transport's terminal fact before registry cleanup requests a stop.
+          log.info("desktop SSH tunnel exited", { code, signal, stopRequested });
+        } catch {
+          // Best-effort diagnostics must not prevent the existing owner cleanup.
+        }
         void stopOwner();
       });
-      await startedChild.ready;
-      if (!isCurrent()) {
-        throw new Error("Worker desktop tunnel stopped before connecting");
-      }
+      await child.ready;
+      assertCurrent();
       let vncPassword: string | undefined;
       if (request.desktop.passwordFilePath) {
         const result = await deps.runner.run(
-          [
-            "ssh",
-            ...workerSshOptions(prepared, { forwarding: "disabled" }),
-            "-a",
-            "-x",
-            "-T",
-            "-p",
-            String(prepared.port),
-            "--",
-            prepared.sshTarget,
-            workerSshRemoteCommand(["cat", request.desktop.passwordFilePath]),
-          ],
+          desktopSshCommand(prepared, ["cat", request.desktop.passwordFilePath]),
           workerSshCommandOptions({ timeoutMs: PASSWORD_READ_TIMEOUT_MS }),
         );
+        assertCurrent();
         if (!successful(result)) {
-          throw workerSshProcessError(result.stderr || result.stdout);
+          throw workerSshProcessError(result.stderr);
         }
         vncPassword = result.stdout.replace(/(?:\r?\n)+$/u, "");
         if (!vncPassword) {
@@ -217,6 +202,7 @@ export function createWorkerDesktopTunnels(deps: {
     return {
       start,
       teardown: async () => {
+        stopRequested = true;
         await child?.stop();
       },
       dispose: async () => {
@@ -226,12 +212,17 @@ export function createWorkerDesktopTunnels(deps: {
   };
 
   async function acquire(request: DesktopAcquireRequest): Promise<DesktopAcquireResult> {
+    if (request.desktop.username) {
+      throw new Error(
+        "Managed desktop account authentication requires the worker node transport; reprovision with node enrollment",
+      );
+    }
     if (platform === "win32") {
       throw new WorkerDesktopUnsupportedError();
     }
     const hooks = createSessionHooks(request);
     try {
-      claimOwnerEpoch(request.environmentId, request.ownerEpoch);
+      sessions.claimOwnerEpoch(request.environmentId, request.ownerEpoch);
       // Register before abort callbacks can reenter Stop; the registry defers source startup.
       const acquiring = sessions.acquire({
         sourceKey: request.environmentId,
@@ -268,63 +259,59 @@ export function createWorkerDesktopTunnels(deps: {
     }
     let ownerAdvanced: boolean;
     try {
-      ownerAdvanced = claimOwnerEpoch(request.environmentId, request.ownerEpoch);
+      ownerAdvanced = sessions.claimOwnerEpoch(request.environmentId, request.ownerEpoch);
     } catch (error) {
+      if (error instanceof DesktopSessionStaleOwnerError) {
+        return Promise.reject(new Error("Worker desktop owner epoch is stale", { cause: error }));
+      }
       return Promise.reject(
         error instanceof Error
           ? error
           : new Error("Worker desktop owner epoch is invalid", { cause: error }),
       );
     }
-    const key = appLaunchKey(request.environmentId, request.app.id);
+    const key = `${request.environmentId}\0${request.app.id}`;
     const current = appLaunches.get(key);
     if (current?.ownerEpoch === request.ownerEpoch) {
       return current.operation;
     }
     const abortController = new AbortController();
-    const startedAtMs = Date.now();
-    let startExecution!: () => void;
-    const startGate = new Promise<void>((resolve) => {
-      startExecution = resolve;
-    });
-    const execution = (async () => {
-      await startGate;
+    const assertCurrent = () => {
       abortController.signal.throwIfAborted();
       if (!sessions.isOwnerEpochCurrent(request.environmentId, request.ownerEpoch)) {
         throw new Error("Worker desktop app launch owner was replaced");
       }
+    };
+    const startedAtMs = Date.now();
+    const { promise: startGate, resolve: startExecution } = createDeferredCore();
+    const execution = (async () => {
+      await startGate;
+      assertCurrent();
       if (current) {
         current.abortController.abort(new Error("Worker desktop app launch owner replaced"));
         await current.operation.catch(() => undefined);
       }
       if (ownerAdvanced) {
-        await fenceReplacedOwners(request.environmentId, request.ownerEpoch);
+        await joinWorkerTunnelStops([
+          sessions.stopSuperseded(request.environmentId, request.ownerEpoch),
+          stopReplacedAppLaunches(request.environmentId, request.ownerEpoch),
+        ]);
       }
-      abortController.signal.throwIfAborted();
+      assertCurrent();
       const prepared = await prepareWorkerSsh({
+        assertCurrent,
         ssh: request.ssh,
         pinnedHostKey: request.ssh.hostKey,
         resolveIdentity: request.resolveIdentity,
         temporaryDirectoryPrefix: "openclaw-worker-desktop-app-",
       });
       try {
-        abortController.signal.throwIfAborted();
+        assertCurrent();
         const remainingLaunchMs = Math.max(0, APP_LAUNCH_TIMEOUT_MS - (Date.now() - startedAtMs));
         // Launchers are stateful: SSH exit 255 cannot prove the remote app did not start.
         // Use the lifecycle-selected port once so an ambiguous disconnect cannot launch twice.
         const result = await deps.runner.run(
-          [
-            "ssh",
-            ...workerSshOptions(prepared, { forwarding: "disabled" }),
-            "-a",
-            "-x",
-            "-T",
-            "-p",
-            String(prepared.port),
-            "--",
-            prepared.sshTarget,
-            workerSshRemoteCommand([request.app.executablePath]),
-          ],
+          desktopSshCommand(prepared, [request.app.executablePath, ...(request.app.args ?? [])]),
           workerSshCommandOptions({
             timeoutMs: remainingLaunchMs,
             signal: abortController.signal,
@@ -348,7 +335,6 @@ export function createWorkerDesktopTunnels(deps: {
     });
     const completeEntry: DesktopAppLaunchEntry = {
       environmentId: request.environmentId,
-      appId: request.app.id,
       ownerEpoch: request.ownerEpoch,
       abortController,
       operation,
@@ -369,7 +355,12 @@ export function createWorkerDesktopTunnels(deps: {
   async function stop(environmentId: string, ownerEpoch?: number): Promise<void> {
     await joinWorkerTunnelStops([
       sessions.stop(environmentId, ownerEpoch),
-      stopAppLaunches(environmentId, ownerEpoch),
+      stopAppLaunches(
+        (entry) =>
+          entry.environmentId === environmentId &&
+          (ownerEpoch === undefined || entry.ownerEpoch === ownerEpoch),
+        "stopped",
+      ),
     ]);
   }
 

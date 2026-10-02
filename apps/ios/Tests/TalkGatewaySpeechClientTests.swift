@@ -170,11 +170,8 @@ struct TalkGatewaySpeechClientTests {
         let parsed = Self.parseSpeechProvider("xiaomi")
         let routing = TalkModeRoutingResolver.resolve(
             parsed: parsed,
-            providerSelection: .gatewayDefault,
-            defaultProvider: "elevenlabs",
-            defaultRealtimeModelId: "gpt-realtime-2")
+            defaultProvider: "elevenlabs")
         #expect(routing.activeProvider == "xiaomi")
-        #expect(routing.executionMode == .native)
         #expect(routing.route == .gatewayTalkSpeak)
 
         let expectedAudio = Data([4, 5, 6])
@@ -187,10 +184,9 @@ struct TalkGatewaySpeechClientTests {
             allowSimulatorCapture: true,
             gatewaySpeechSynthesizer: synthesizer)
         manager.bufferedPlayer = audioPlayer
-        manager._test_applyLoadedTalkConfig(parsed, providerSelection: .gatewayDefault)
+        manager._test_applyLoadedTalkConfig(parsed)
 
         #expect(manager._test_runtimeRoute() == .gatewayTalkSpeak)
-        #expect(manager._test_executionMode() == .native)
         #expect(!manager.gatewayTalkUsesRealtime)
         #expect(manager.gatewayTalkTransportLabel == "Native")
 
@@ -210,7 +206,7 @@ struct TalkGatewaySpeechClientTests {
             allowSimulatorCapture: true,
             gatewaySpeechSynthesizer: synthesizer)
         manager.bufferedPlayer = RecordingBufferedAudioPlayer()
-        manager._test_applyLoadedTalkConfig(parsed, providerSelection: .gatewayDefault)
+        manager._test_applyLoadedTalkConfig(parsed)
 
         await manager._test_playAssistant(text: "{\"voice\":\"alloy\",\"model\":\"expressive\"}\nFirst")
         await manager._test_playAssistant(text: "Second")
@@ -230,7 +226,7 @@ struct TalkGatewaySpeechClientTests {
             allowSimulatorCapture: true,
             gatewaySpeechSynthesizer: synthesizer)
         manager.bufferedPlayer = RecordingBufferedAudioPlayer()
-        manager._test_applyLoadedTalkConfig(parsed, providerSelection: .gatewayDefault)
+        manager._test_applyLoadedTalkConfig(parsed)
 
         await manager._test_playAssistant(text: "No model override")
 
@@ -247,7 +243,7 @@ struct TalkGatewaySpeechClientTests {
             allowSimulatorCapture: true,
             gatewaySpeechSynthesizer: synthesizer)
         manager.bufferedPlayer = audioPlayer
-        manager._test_applyLoadedTalkConfig(parsed, providerSelection: .gatewayDefault)
+        manager._test_applyLoadedTalkConfig(parsed)
 
         let playback = Task { await manager._test_playAssistant(text: "Delayed voice") }
         while !synthesizer.hasPendingRequest {
@@ -271,7 +267,7 @@ struct TalkGatewaySpeechClientTests {
             allowSimulatorCapture: true,
             gatewaySpeechSynthesizer: synthesizer)
         manager.bufferedPlayer = audioPlayer
-        manager._test_applyLoadedTalkConfig(parsed, providerSelection: .gatewayDefault)
+        manager._test_applyLoadedTalkConfig(parsed)
 
         let playback = Task { await manager._test_playAssistant(text: "Interrupt me") }
         while !audioPlayer.isPlaying {
@@ -291,33 +287,25 @@ struct TalkGatewaySpeechClientTests {
 
         let routing = TalkModeRoutingResolver.resolve(
             parsed: parsed,
-            providerSelection: .gatewayDefault,
-            defaultProvider: "elevenlabs",
-            defaultRealtimeModelId: "gpt-realtime-2")
+            defaultProvider: "elevenlabs")
 
         #expect(routing.activeProvider == "openai")
-        #expect(routing.executionMode == .native)
         #expect(routing.route == .gatewayTalkSpeak)
     }
 
     @Test func `system voice keeps BCP 47 locale separate from provider language`() {
         let manager = TalkModeManager(allowSimulatorCapture: true)
         manager._test_applyLoadedTalkConfig(
-            Self.parseSpeechProvider("elevenlabs", speechLocale: "tr_TR"),
-            providerSelection: .gatewayDefault)
+            Self.parseSpeechProvider("elevenlabs", speechLocale: "tr_TR"))
 
         let configured = manager._test_resolvedSpeechLanguages(
-            directiveLanguage: nil,
-            localSelection: TalkSpeechLocale.automaticID)
+            directiveLanguage: nil)
         let directive = manager._test_resolvedSpeechLanguages(
-            directiveLanguage: "de_DE",
-            localSelection: "fr-FR")
+            directiveLanguage: "de_DE")
         let providerCompatible = manager._test_resolvedSpeechLanguages(
-            directiveLanguage: "tr",
-            localSelection: TalkSpeechLocale.automaticID)
+            directiveLanguage: "tr")
         let unavailableDirective = manager._test_resolvedSpeechLanguages(
             directiveLanguage: "zz-ZZ",
-            localSelection: TalkSpeechLocale.automaticID,
             isSystemVoiceAvailable: { $0 == "tr-TR" })
 
         #expect(configured.provider == nil)
@@ -362,11 +350,8 @@ struct TalkGatewaySpeechClientTests {
 
         let routing = TalkModeRoutingResolver.resolve(
             parsed: parsed,
-            providerSelection: .gatewayDefault,
-            defaultProvider: "elevenlabs",
-            defaultRealtimeModelId: "gpt-realtime-2")
+            defaultProvider: "elevenlabs")
 
-        #expect(routing.executionMode == .realtimeRelay)
         #expect(routing.route == .realtimeRelay)
         #expect(!routing.route.usesGatewayTalkSpeak)
         #expect(routing.route.gatewayOwnsCredentials)

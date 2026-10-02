@@ -4,14 +4,14 @@ import { withServer, withTempDir } from "openclaw/plugin-sdk/test-env";
 import { expect, test } from "vitest";
 import { createQaGatewayChild, writeJson } from "../../../../extensions/qa-lab/api.js";
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
+import { createQaPreparedRepoCliCommand } from "../../../helpers/qa-prepared-repo-cli.js";
 
 type JsonObject = Record<string, unknown>;
 
 const BOT_TOKEN = `424242:${"A".repeat(35)}`;
 const CHAT_ID = -1001234;
 const SENDER_ID = 777;
-const FAILURE_TEXT =
-  "⚠️ mock-openai/gpt-5.6-luna-alt request failed (provider internal error, HTTP 500). This is usually temporary — try again shortly.";
+const FAILURE_TEXT = "⚠️ The AI service is having trouble. Please try again in a moment.";
 const RAW_ERROR_CANARY = "untrusted-provider-detail-qa-canary";
 const REQUEST_TEXT =
   "Please investigate this request. This turn should visibly settle even if the agent fails.";
@@ -115,7 +115,7 @@ test("visibly settles a message-tool-only Telegram turn after a provider failure
           const repoRoot = path.resolve(import.meta.dirname, "../../../..");
           await gatewayOwner.start({
             repoRoot,
-            useRepoCli: true,
+            command: createQaPreparedRepoCliCommand(repoRoot),
             providerBaseUrl: `${apiRoot}/v1`,
             transportBaseUrl: apiRoot,
             transport: {
