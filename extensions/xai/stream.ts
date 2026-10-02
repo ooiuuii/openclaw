@@ -1,4 +1,3 @@
-// Xai plugin module implements stream behavior.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { streamSimple } from "openclaw/plugin-sdk/llm";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
@@ -9,17 +8,11 @@ import {
   createToolStreamWrapper,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { asOptionalRecord, filterStringEntries } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveXaiFastModelId } from "./fast-mode.js";
 import { XAI_BASE_URL } from "./model-definitions.js";
-import { resolveXaiOAuthAutoModelId } from "./model-id.js";
 import { isXaiGrokProxyBaseUrl } from "./provider-catalog.js";
 import { isXaiProviderId } from "./provider-id.js";
 
-const XAI_FAST_MODEL_IDS = new Map<string, string>([
-  ["grok-3", "grok-3-fast"],
-  ["grok-3-mini", "grok-3-mini-fast"],
-  ["grok-4", "grok-4-fast"],
-  ["grok-4-0709", "grok-4-fast"],
-]);
 type DynamicFastMode = boolean | (() => boolean | undefined);
 
 function isXaiEndpoint(model: Parameters<StreamFn>[0], endpoint: string): boolean {
@@ -40,34 +33,17 @@ function createXaiGrokOAuthHeadersWrapper(
     ) {
       return underlying(model, context, options);
     }
-    // Keep the selected alias stable through auth materialization; resolve only on the wire.
-    const modelId = resolveXaiOAuthAutoModelId(model.id, model.params);
     const headers = new Headers(options?.headers);
     // The Grok OAuth proxy requires its CLI identity and a concrete catalog model.
     // Keep these proxy-only so ordinary xAI API-key traffic retains its public contract.
     headers.set("X-XAI-Token-Auth", "xai-grok-cli");
     headers.set("x-grok-client-version", normalizedClientVersion);
-    headers.set("x-grok-model-override", modelId);
-    return underlying({ ...model, id: modelId }, context, {
+    headers.set("x-grok-model-override", model.id);
+    return underlying(model, context, {
       ...options,
       headers: Object.fromEntries(headers.entries()),
     });
   };
-}
-
-function resolveXaiFastModelId(modelId: unknown): string | undefined {
-  if (typeof modelId !== "string") {
-    return undefined;
-  }
-  return XAI_FAST_MODEL_IDS.get(modelId.trim());
-}
-
-function supportsReasoningControls(model: { compat?: unknown; reasoning?: unknown }): boolean {
-  const compat =
-    model.compat && typeof model.compat === "object"
-      ? (model.compat as { supportsReasoningEffort?: unknown })
-      : undefined;
-  return model.reasoning === true && compat?.supportsReasoningEffort !== false;
 }
 
 const XAI_REASONING_ENCRYPTED_CONTENT_INCLUDE = "reasoning.encrypted_content";
@@ -173,50 +149,51 @@ function normalizeXaiResponsesToolResultPayload(
   }
 
   const includeImages = Array.isArray(model.input) && model.input.includes("image");
-  const imageContentParts: Array<Record<string, unknown>> = [];
+  let imageContentParts: Array<Record<string, unknown>> = [];
   let toolResultIndex = 0;
-  const normalizedInput = payloadObj.input.map((item: unknown) => {
+  const normalizedInput = payloadObj.input.flatMap((item: unknown, index, input) => {
     const itemObj = asOptionalRecord(item);
     if (itemObj?.type !== "function_call_output") {
-      return item;
+      return [item];
     }
     // String outputs also occupy a result position, even though they carry no images.
     toolResultIndex += 1;
-    if (!Array.isArray(itemObj.output)) {
-      return item;
-    }
-
-    const outputParts = itemObj.output as Array<Record<string, unknown>>;
-    let textOutput = "";
-    const imageStart = imageContentParts.length;
-    for (const part of outputParts) {
-      if (part.type === "input_text" && typeof part.text === "string") {
-        textOutput += part.text;
-      }
-      if (includeImages && isReplayableInputImagePart(part)) {
-        // Emit one ownership label before this result's first replayable image.
-        if (imageContentParts.length === imageStart) {
-          imageContentParts.push({
-            type: "input_text",
-            text: `Image(s) from tool result #${toolResultIndex}:`,
-          });
+    let normalizedItem = item;
+    if (Array.isArray(itemObj.output)) {
+      const outputParts = itemObj.output as Array<Record<string, unknown>>;
+      let textOutput = "";
+      const imageStart = imageContentParts.length;
+      for (const part of outputParts) {
+        if (part.type === "input_text" && typeof part.text === "string") {
+          textOutput += part.text;
         }
-        imageContentParts.push(part);
+        if (includeImages && isReplayableInputImagePart(part)) {
+          // Emit one ownership label before this result's first replayable image.
+          if (imageContentParts.length === imageStart) {
+            imageContentParts.push({
+              type: "input_text",
+              text: `Image(s) from tool result #${toolResultIndex}:`,
+            });
+          }
+          imageContentParts.push(part);
+        }
       }
+      normalizedItem = {
+        ...itemObj,
+        output: textOutput || describeXaiFunctionOutputMediaPlaceholder(outputParts) || "",
+      };
     }
-    return {
-      ...itemObj,
-      output: textOutput || describeXaiFunctionOutputMediaPlaceholder(outputParts) || "",
-    };
+    // Keep parallel outputs together, then anchor their images before later history.
+    if (
+      imageContentParts.length === 0 ||
+      asOptionalRecord(input[index + 1])?.type === "function_call_output"
+    ) {
+      return [normalizedItem];
+    }
+    const carrier = { type: "message", role: "user", content: imageContentParts };
+    imageContentParts = [];
+    return [normalizedItem, carrier];
   });
-
-  if (imageContentParts.length > 0) {
-    normalizedInput.push({
-      type: "message",
-      role: "user",
-      content: imageContentParts,
-    });
-  }
 
   payloadObj.input = normalizedInput;
 }
@@ -224,7 +201,7 @@ function normalizeXaiResponsesToolResultPayload(
 function createXaiToolPayloadCompatibilityWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
   return createPayloadPatchStreamWrapper(baseStreamFn, ({ payload, model }) => {
     normalizeXaiResponsesToolResultPayload(payload, model);
-    if (!supportsReasoningControls(model)) {
+    if (!model.reasoning || asOptionalRecord(model.compat)?.supportsReasoningEffort === false) {
       // Only current flagship Grok models advertise configurable effort.
       delete payload.reasoning;
       delete payload.reasoningEffort;
@@ -241,17 +218,11 @@ function createXaiFastModeWrapper(
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
   return (model, context, options) => {
-    const supportsFastAliasTransport =
-      model.api === "openai-completions" || model.api === "openai-responses";
-    if (
-      (typeof fastMode === "function" ? fastMode() : fastMode) !== true ||
-      !supportsFastAliasTransport ||
-      !isXaiProviderId(model.provider)
-    ) {
+    if ((typeof fastMode === "function" ? fastMode() : fastMode) !== true) {
       return underlying(model, context, options);
     }
 
-    const fastModelId = resolveXaiFastModelId(model.id);
+    const fastModelId = resolveXaiFastModelId(model);
     if (!fastModelId) {
       return underlying(model, context, options);
     }
@@ -262,11 +233,8 @@ function createXaiFastModeWrapper(
 
 function resolveXaiFastMode(extraParams: Record<string, unknown> | undefined): boolean | undefined {
   const raw = extraParams?.fastMode ?? extraParams?.fast_mode;
-  if (typeof raw === "function") {
-    const resolved = (raw as () => unknown)();
-    return typeof resolved === "boolean" ? resolved : undefined;
-  }
-  return typeof raw === "boolean" ? raw : undefined;
+  const resolved = typeof raw === "function" ? (raw as () => unknown)() : raw;
+  return resolved === "ultrafast" ? true : typeof resolved === "boolean" ? resolved : undefined;
 }
 
 function hasXaiFastModeParam(extraParams: Record<string, unknown> | undefined): boolean {

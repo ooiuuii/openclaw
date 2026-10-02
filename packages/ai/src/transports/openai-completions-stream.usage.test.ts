@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { createZeroUsage } from "../usage.test-support.js";
 import { processCompletionsStream } from "./openai-completions-stream.js";
 import {
   type CapturedStreamEvent,
@@ -12,6 +11,24 @@ import {
 import { parseOpenAICompletionsUsage } from "./openai-transport-shared.js";
 
 describe("openai completions stream", () => {
+  it.each([
+    {
+      name: "missing total tokens",
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+    {
+      name: "total below prompt and completion tokens",
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 14 },
+    },
+  ])("marks $name as unavailable context", ({ usage }) => {
+    const model = makeCompletionsModel();
+
+    expect(
+      parseOpenAICompletionsUsage(usage as Parameters<typeof parseOpenAICompletionsUsage>[0], model)
+        .contextUsage,
+    ).toEqual({ state: "unavailable" });
+  });
+
   it("preserves reasoning tokens without double-counting them", () => {
     const model = makeCompletionsModel({
       id: "gpt-5",
@@ -34,6 +51,7 @@ describe("openai completions stream", () => {
         input: 7,
         output: 20,
         cacheRead: 3,
+        contextUsage: { state: "available", promptTokens: 10, totalTokens: 30 },
         reasoningTokens: 7,
         totalTokens: 30,
       },
@@ -86,7 +104,13 @@ describe("openai completions stream", () => {
 
     // Writes are their own bucket: they must leave `input` and land in `totalTokens`,
     // matching the plugin-sdk completions provider.
-    expect(usage).toMatchObject({ input: 5, cacheRead: 3, cacheWrite: 2, totalTokens: 15 });
+    expect(usage).toMatchObject({
+      input: 5,
+      cacheRead: 3,
+      cacheWrite: 2,
+      contextUsage: { state: "available", promptTokens: 10, totalTokens: 15 },
+      totalTokens: 15,
+    });
   });
 
   it("keeps the catalog estimate for an invalid provider-reported usage cost", () => {
@@ -134,6 +158,7 @@ describe("openai completions stream", () => {
         input: 0,
         output: 5,
         cacheRead: 4,
+        contextUsage: { state: "unavailable" },
         totalTokens: 9,
       },
     );
@@ -149,16 +174,7 @@ describe("openai completions stream", () => {
       contextWindow: 128000,
       maxTokens: 4096,
     });
-    const output = {
-      role: "assistant" as const,
-      content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
-      usage: createZeroUsage(),
-      stopReason: "stop" as const,
-      timestamp: Date.now(),
-    };
+    const output = createAssistantOutput(model);
     const stream: { push(event: unknown): void } = { push() {} };
 
     async function* mockStream() {
@@ -179,6 +195,7 @@ describe("openai completions stream", () => {
       input: 8,
       output: 10,
       cacheRead: 0,
+      contextUsage: { state: "available", promptTokens: 8, totalTokens: 18 },
       totalTokens: 18,
     });
   });
@@ -368,16 +385,7 @@ describe("openai completions stream", () => {
       contextWindow: 128000,
       maxTokens: 4096,
     });
-    const output = {
-      role: "assistant" as const,
-      content: [],
-      api: model.api,
-      provider: model.provider,
-      model: model.id,
-      usage: createZeroUsage(),
-      stopReason: "stop" as const,
-      timestamp: Date.now(),
-    };
+    const output = createAssistantOutput(model);
     const stream: { push(event: unknown): void } = { push() {} };
 
     async function* mockStream() {

@@ -7,9 +7,14 @@ import { formatCliCommand } from "../cli/command-format.js";
 import { resolveLegacyStateDirs, resolveStateDir } from "../config/paths.js";
 import { root } from "../infra/fs-safe.js";
 import { pathMayExistSync } from "../infra/path-existence.js";
+import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { formatDoctorStateRepairFailure } from "../infra/state-repair-message.js";
+import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import { resolveUserPath } from "../utils.js";
-import { resolveWorkspaceStateIdentity } from "./workspace-state-identity.js";
+import {
+  resolveCanonicalWorkspacePath,
+  resolveWorkspaceStateIdentity,
+} from "./workspace-state-identity.js";
 
 export const LEGACY_WORKSPACE_STATE_DIRNAME = ".openclaw";
 const LEGACY_WORKSPACE_STATE_FILENAME = "workspace-state.json";
@@ -47,19 +52,14 @@ type LegacyWorkspaceResetPlan = {
 };
 
 function uniqueSiblingPaths(paths: readonly string[]): string[] {
-  const seen = new Set<string>();
-  return paths.filter((candidate) => {
+  return dedupeByKey(paths, (candidate) => {
     let key = path.resolve(candidate);
     try {
       key = path.join(fs.realpathSync.native(path.dirname(candidate)), path.basename(candidate));
     } catch {
       // Missing parents stay distinct lexical migration inputs.
     }
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
+    return key;
   });
 }
 
@@ -72,11 +72,12 @@ export function resolveLegacyWorkspaceSourcePaths(
   // while it still exists; destructive cleanup may remove the alias first.
   const workspacePath = path.resolve(resolveUserPath(workspaceDir));
   const canonicalIdentity = resolveWorkspaceStateIdentity(workspaceDir);
+  const canonicalDirectoryPath = resolveCanonicalWorkspacePath(workspaceDir);
   const workspaceKeys = [
     createHash("sha256").update(workspacePath).digest("hex"),
     canonicalIdentity.workspaceKey,
   ];
-  const workspacePaths = [workspacePath, canonicalIdentity.workspacePath];
+  const workspacePaths = [workspacePath, canonicalDirectoryPath];
   const env = options?.env ?? process.env;
   const stateDirs = [
     resolveStateDir(env, options?.homedir),
@@ -85,9 +86,9 @@ export function resolveLegacyWorkspaceSourcePaths(
   return {
     workspacePath,
     setupStatePaths: [
-      path.join(canonicalIdentity.workspacePath, LEGACY_WORKSPACE_STATE_CURRENT_FILENAME),
+      path.join(canonicalDirectoryPath, LEGACY_WORKSPACE_STATE_CURRENT_FILENAME),
       path.join(
-        canonicalIdentity.workspacePath,
+        canonicalDirectoryPath,
         LEGACY_WORKSPACE_STATE_DIRNAME,
         LEGACY_WORKSPACE_STATE_FILENAME,
       ),
@@ -158,7 +159,8 @@ function workspaceMigrationError(
   env?: NodeJS.ProcessEnv,
   operation?: "doctor",
 ): Error {
-  return new Error(
+  return new StartupMaintenanceRequiredError(
+    "legacy-workspace",
     operation === "doctor"
       ? formatDoctorStateRepairFailure(
           `Legacy workspace setup state requires migration at ${blockedPaths.join(", ")}`,
@@ -264,7 +266,7 @@ export function prepareLegacyWorkspaceStateReset(
 /** Discard retired workspace files from a pre-removal reset plan. */
 export async function removeLegacyWorkspaceStateForReset(
   plan: LegacyWorkspaceResetPlan,
-  options?: { dryRun?: boolean },
+  options?: { dryRun?: boolean; assertCurrent?: () => void },
 ): Promise<LegacyWorkspaceResetCleanup> {
   const removedPaths: string[] = [];
   const warnings: string[] = [];
@@ -297,6 +299,7 @@ export async function removeLegacyWorkspaceStateForReset(
         }
       }
       if (!options?.dryRun) {
+        options?.assertCurrent?.();
         await sourceRoot.remove(relativePath);
       }
       removedPaths.push(sourcePath);

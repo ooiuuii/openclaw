@@ -1,4 +1,3 @@
-// Telegram tests cover command ui plugin behavior.
 import {
   createEmptyPluginRegistry,
   withPluginRuntimeRegistryScope,
@@ -11,7 +10,6 @@ import { createPluginCommandRuntime } from "openclaw/plugin-sdk/plugin-command-r
 import { matchPluginCommand, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
 import { describe, expect, it } from "vitest";
 import { buildPluginTelegramMenuCommands } from "./bot-native-command-menu.js";
-import { buildCommandsPaginationKeyboard } from "./command-ui.js";
 import { inputRichBlocksToPlainText } from "./rich-block-model.js";
 import { planTelegramTextDeliveryPages } from "./telegram-text-delivery.js";
 
@@ -38,15 +36,6 @@ function commandPages() {
 }
 
 describe("telegram command ui", () => {
-  it("adds agent id to command pagination callback data when provided", () => {
-    const keyboard = buildCommandsPaginationKeyboard(2, 3, "agent-main");
-    expect(keyboard[0]).toEqual([
-      { text: "◀ Prev", callback_data: "commands_page_1:agent-main" },
-      { text: "2/3", callback_data: "commands_page_noop:agent-main" },
-      { text: "Next ▶", callback_data: "commands_page_3:agent-main" },
-    ]);
-  });
-
   it.each([false, true])(
     "preserves command owners when normalized names collide (reverse=%s)",
     (reverse) => {
