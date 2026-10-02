@@ -51,7 +51,7 @@ describe("registered native command routing through the message pipeline", () =>
   it.each([false, true])(
     "preserves canonical export command with colliding workspace skill=%s",
     async (collision) => {
-      const workspace = await commandCollisionDirs.make("telegram-command-collision-");
+      const workspace = commandCollisionDirs.make("telegram-command-collision-");
       if (collision) {
         await writeSkill({
           dir: path.join(workspace, "skills", "export-session"),
