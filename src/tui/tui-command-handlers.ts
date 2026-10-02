@@ -846,7 +846,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     exit: () => requestExit(),
   } satisfies Record<TuiCommandHandlerName, CommandHandler>;
 
-  const handleCommand = async (raw: string) => {
+  const handleCommand = async (raw: string, onBlockedChat?: () => void) => {
     const { name, args } = parseCommand(raw);
     if (!name) {
       return;
@@ -864,6 +864,12 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     } else if (opts.local && isSharedTextCommand(raw)) {
       addUnsupportedLocalCommand(name);
     } else {
+      const admission = resolveMessageAdmission(raw);
+      if (admission.status === "blocked") {
+        onBlockedChat?.();
+        reportBlockedMessageSubmit(raw, admission);
+        return;
+      }
       await sendMessage(raw);
     }
     tui.requestRender();
