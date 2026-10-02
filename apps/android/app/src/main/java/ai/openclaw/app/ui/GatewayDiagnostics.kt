@@ -3,16 +3,12 @@ package ai.openclaw.app.ui
 import ai.openclaw.app.BuildConfig
 import ai.openclaw.app.GatewayConnectionDisplay
 import ai.openclaw.app.GatewayConnectionProblem
-import ai.openclaw.app.GatewayNodeApprovalState
 import ai.openclaw.app.GatewayNodeCapabilityApproval
 import ai.openclaw.app.gateway.normalizeGatewayApprovalRequestId
-import ai.openclaw.app.gatewayConnectionStatusForDisplay
 import ai.openclaw.app.i18n.nativeString
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
-import android.widget.Toast
 
 /** App version label shared by diagnostics and gateway-facing Android metadata. */
 internal fun openClawAndroidVersionLabel(): String {
@@ -23,9 +19,6 @@ internal fun openClawAndroidVersionLabel(): String {
     versionName
   }
 }
-
-/** Normalizes blank gateway status text for display and diagnostics copy. */
-internal fun gatewayStatusForDisplay(statusText: String): String = gatewayConnectionStatusForDisplay(statusText)
 
 /** Converts raw gateway connection state into a stable compact label for status surfaces. */
 internal fun gatewayStatusLabel(
@@ -113,100 +106,37 @@ internal fun gatewayStatusLooksLikePairing(statusText: String): Boolean {
 }
 
 /** Maps structured gateway auth failures to the compact labels used by status surfaces. */
-internal fun gatewayAuthRecoveryLabel(problem: GatewayConnectionProblem?): String? {
-  val kind =
-    when (problem?.code) {
-      "AUTH_BOOTSTRAP_TOKEN_INVALID" -> GatewayAuthRecoveryLabelKind.SETUP_CODE_EXPIRED
-
-      "AUTH_TOKEN_MISSING" -> GatewayAuthRecoveryLabelKind.TOKEN_NEEDED
-
-      "AUTH_TOKEN_NOT_CONFIGURED" -> GatewayAuthRecoveryLabelKind.TOKEN_NOT_CONFIGURED
-
-      "AUTH_PASSWORD_MISSING" -> GatewayAuthRecoveryLabelKind.PASSWORD_NEEDED
-
-      "AUTH_PASSWORD_MISMATCH" -> GatewayAuthRecoveryLabelKind.PASSWORD_INVALID
-
-      "AUTH_PASSWORD_NOT_CONFIGURED" -> GatewayAuthRecoveryLabelKind.PASSWORD_NOT_CONFIGURED
-
-      "AUTH_SCOPE_MISMATCH" -> GatewayAuthRecoveryLabelKind.ACCESS_NEEDS_REVIEW
-
-      "AUTH_TOKEN_MISMATCH",
-      "AUTH_DEVICE_TOKEN_MISMATCH",
-      -> GatewayAuthRecoveryLabelKind.SAVED_AUTH_INVALID
-
-      "CONTROL_UI_DEVICE_IDENTITY_REQUIRED",
-      "DEVICE_IDENTITY_REQUIRED",
-      -> GatewayAuthRecoveryLabelKind.DEVICE_IDENTITY_REQUIRED
-
-      else -> return null
-    }
-  return gatewayAuthRecoveryLabel(kind)
-}
-
-private enum class GatewayAuthRecoveryLabelKind {
-  SETUP_CODE_EXPIRED,
-  TOKEN_NEEDED,
-  TOKEN_NOT_CONFIGURED,
-  PASSWORD_NEEDED,
-  PASSWORD_INVALID,
-  PASSWORD_NOT_CONFIGURED,
-  ACCESS_NEEDS_REVIEW,
-  SAVED_AUTH_INVALID,
-  DEVICE_IDENTITY_REQUIRED,
-}
-
-private fun gatewayAuthRecoveryLabel(kind: GatewayAuthRecoveryLabelKind): String =
-  when (kind) {
-    GatewayAuthRecoveryLabelKind.SETUP_CODE_EXPIRED -> nativeString("Setup code expired")
-    GatewayAuthRecoveryLabelKind.TOKEN_NEEDED -> nativeString("Gateway token needed")
-    GatewayAuthRecoveryLabelKind.TOKEN_NOT_CONFIGURED -> nativeString("Gateway token not configured")
-    GatewayAuthRecoveryLabelKind.PASSWORD_NEEDED -> nativeString("Gateway password needed")
-    GatewayAuthRecoveryLabelKind.PASSWORD_INVALID -> nativeString("Gateway password invalid")
-    GatewayAuthRecoveryLabelKind.PASSWORD_NOT_CONFIGURED -> nativeString("Gateway password not configured")
-    GatewayAuthRecoveryLabelKind.ACCESS_NEEDS_REVIEW -> nativeString("Gateway access needs review")
-    GatewayAuthRecoveryLabelKind.SAVED_AUTH_INVALID -> nativeString("Saved auth invalid")
-    GatewayAuthRecoveryLabelKind.DEVICE_IDENTITY_REQUIRED -> nativeString("Device identity required")
+internal fun gatewayAuthRecoveryLabel(problem: GatewayConnectionProblem?): String? =
+  when (problem?.code) {
+    "AUTH_BOOTSTRAP_TOKEN_INVALID" -> nativeString("Setup code no longer valid")
+    "AUTH_TOKEN_MISSING" -> nativeString("Gateway token needed")
+    "AUTH_TOKEN_NOT_CONFIGURED" -> nativeString("Gateway token not configured")
+    "AUTH_PASSWORD_MISSING" -> nativeString("Gateway password needed")
+    "AUTH_PASSWORD_MISMATCH" -> nativeString("Gateway password invalid")
+    "AUTH_PASSWORD_NOT_CONFIGURED" -> nativeString("Gateway password not configured")
+    "AUTH_SCOPE_MISMATCH" -> nativeString("Gateway access needs review")
+    "AUTH_TOKEN_MISMATCH", "AUTH_DEVICE_TOKEN_MISMATCH" -> nativeString("Saved auth invalid")
+    "CONTROL_UI_DEVICE_IDENTITY_REQUIRED", "DEVICE_IDENTITY_REQUIRED" -> nativeString("Device identity required")
+    else -> null
   }
 
 /** Returns the exact host command for one node's approval state when available. */
-internal fun gatewayNodeApprovalCommand(
-  state: GatewayNodeApprovalState,
-  requestId: String?,
-): String? =
-  when (state) {
-    GatewayNodeApprovalState.PendingApproval,
-    GatewayNodeApprovalState.PendingReapproval,
-    -> normalizeGatewayApprovalRequestId(requestId)?.let { "openclaw nodes approve $it" } ?: "openclaw nodes status"
+internal fun gatewayNodeApprovalCommand(approval: GatewayNodeCapabilityApproval): String? {
+  val requestId =
+    when (approval) {
+      is GatewayNodeCapabilityApproval.PendingApproval -> approval.requestId
 
-    GatewayNodeApprovalState.Unapproved -> "openclaw nodes status"
+      is GatewayNodeCapabilityApproval.PendingReapproval -> approval.requestId
 
-    GatewayNodeApprovalState.Loading,
-    GatewayNodeApprovalState.Unsupported,
-    GatewayNodeApprovalState.Approved,
-    -> null
-  }
+      GatewayNodeCapabilityApproval.Unapproved -> null
 
-internal fun gatewayNodeApprovalCommand(approval: GatewayNodeCapabilityApproval): String? =
-  when (approval) {
-    is GatewayNodeCapabilityApproval.PendingApproval -> {
-      gatewayNodeApprovalCommand(GatewayNodeApprovalState.PendingApproval, approval.requestId)
+      GatewayNodeCapabilityApproval.Loading,
+      GatewayNodeCapabilityApproval.Unsupported,
+      GatewayNodeCapabilityApproval.Approved,
+      -> return null
     }
-
-    is GatewayNodeCapabilityApproval.PendingReapproval -> {
-      gatewayNodeApprovalCommand(GatewayNodeApprovalState.PendingReapproval, approval.requestId)
-    }
-
-    GatewayNodeCapabilityApproval.Unapproved -> {
-      gatewayNodeApprovalCommand(GatewayNodeApprovalState.Unapproved, requestId = null)
-    }
-
-    GatewayNodeCapabilityApproval.Loading,
-    GatewayNodeCapabilityApproval.Unsupported,
-    GatewayNodeCapabilityApproval.Approved,
-    -> {
-      null
-    }
-  }
+  return normalizeGatewayApprovalRequestId(requestId)?.let { "openclaw nodes approve $it" } ?: "openclaw nodes status"
+}
 
 /** Builds the copyable support prompt with device, endpoint, and exact status context. */
 internal fun buildGatewayDiagnosticsReport(
@@ -262,6 +192,5 @@ internal fun copyGatewayDiagnosticsReport(
 ) {
   val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
   val report = buildGatewayDiagnosticsReport(screen = screen, gatewayAddress = gatewayAddress, statusText = statusText)
-  clipboard.setPrimaryClip(ClipData.newPlainText("OpenClaw gateway diagnostics", report))
-  Toast.makeText(context, nativeString("Copied gateway diagnostics"), Toast.LENGTH_SHORT).show()
+  clipboard.copyTextWithConfirmation(context, "OpenClaw gateway diagnostics", report, nativeString("Copied gateway diagnostics"))
 }

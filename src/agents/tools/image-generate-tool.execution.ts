@@ -2,7 +2,6 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { generateImage } from "../../image-generation/runtime.js";
 import type {
-  ImageGenerationIgnoredOverride,
   ImageGenerationBackground,
   ImageGenerationOutputFormat,
   ImageGenerationProvider,
@@ -14,138 +13,25 @@ import type {
 import type { SsrFPolicy } from "../../infra/net/ssrf.js";
 import { resolveGeneratedMediaMaxBytes } from "../../media/configured-max-bytes.js";
 import { getImageMetadata } from "../../media/media-services.js";
-import { saveMediaBuffer } from "../../media/store.js";
-import { acquirePluginCapabilityProviders } from "../../plugins/capability-provider-acquisition.js";
-import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
-import { AsyncWorkScope } from "../../shared/async-work-scope.js";
-import {
-  formatGeneratedAttachmentLines,
-  sanitizeGeneratedMediaDisplayText,
-  type AgentGeneratedAttachment,
-} from "../generated-attachments.js";
-import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.types.js";
+import { extractOriginalFilename } from "../../media/store.js";
+import { formatGeneratedAttachmentLines } from "../generated-attachments.js";
 import { ToolInputError } from "./common.js";
-import { persistGeneratedMediaBatch } from "./generated-media-batch-persistence.js";
+import { persistGeneratedMediaBuffers } from "./generated-media-batch-persistence.js";
+import type { MediaGenerationTaskHandle } from "./media-generate-background-shared.js";
+import { imageGenerationTaskLifecycle } from "./media-generate-background.js";
 import {
-  imageGenerationTaskLifecycle,
-  type ImageGenerationTaskHandle,
-} from "./media-generate-background.js";
+  buildMediaGenerateToolExecutionResult,
+  describeMediaGenerationResult,
+  resolveMediaGenerationResultGeometry,
+} from "./media-generate-result-shared.js";
 import {
   buildMediaReferenceDetails,
-  buildTaskRunDetails,
   createCapabilityProviderRuntimeDeps,
-  loadMediaToolReferences,
-  resolveMediaToolSandboxConfig,
+  type LoadedMediaToolReference,
 } from "./media-tool-shared.js";
 
 const DEFAULT_RESOLUTION: ImageGenerationResolution = "1K";
 const GENERATED_IMAGE_MEDIA_SUBDIR = "tool-image-generation";
-
-export async function acquireImageGenerationToolProviders(params: {
-  cfg: OpenClawConfig;
-  prepared?: PreparedModelRuntimeSnapshot;
-}) {
-  const work = new AsyncWorkScope();
-  const prepared = params.prepared;
-  const inGeneration = <T>(run: () => T): T =>
-    prepared
-      ? withPluginRuntimeGenerationScope(
-          { metadataSnapshot: prepared.metadataSnapshot, pluginRegistry: prepared.pluginRegistry },
-          run,
-        )
-      : run();
-  let captured:
-    | ReturnType<NonNullable<PreparedModelRuntimeSnapshot["acquireMediaCapabilityProviders"]>>
-    | undefined;
-  let cold:
-    | Awaited<ReturnType<typeof acquirePluginCapabilityProviders<"imageGenerationProviders">>>
-    | undefined;
-  let releaseCompletion: Promise<void> | undefined;
-  const release = () =>
-    (releaseCompletion ??= Promise.resolve().then(async () => {
-      work.beginClose();
-      try {
-        await work.runWhenIdle(async () => {
-          const errors: unknown[] = [];
-          // A copied prepared registry can contribute callbacks without a second physical claim.
-          // Drain the cold view's work before surrendering its original prepared source.
-          for (const owner of [cold, captured]) {
-            try {
-              await owner?.release();
-            } catch (error) {
-              errors.push(error);
-            }
-          }
-          if (errors.length > 0) {
-            throw new AggregateError(errors, "Image provider resource cleanup failed");
-          }
-        });
-      } finally {
-        await work.drain();
-      }
-    }));
-  try {
-    const providers = await work.track(async () => {
-      captured = prepared?.acquireMediaCapabilityProviders?.();
-      const known = captured
-        ? captured.providers.imageGenerationProviders
-        : prepared?.mediaCapabilityProviders?.imageGenerationProviders;
-      if (known !== undefined) {
-        return [...known];
-      }
-      cold = await inGeneration(() =>
-        acquirePluginCapabilityProviders({ key: "imageGenerationProviders", cfg: params.cfg }),
-      );
-      return cold.providers;
-    });
-    return {
-      providers,
-      assertOpen: () => {
-        if (releaseCompletion) {
-          throw new Error("Image provider resources have been released");
-        }
-        captured?.assertOpen();
-        cold?.assertOpen();
-      },
-      run: <T>(run: () => T | Promise<T>) =>
-        releaseCompletion
-          ? Promise.reject(new Error("Image provider resources have been released"))
-          : work.track(() => inGeneration(() => (cold ? cold.run(run) : run()))),
-      release,
-    };
-  } catch (error) {
-    let cleanupFailure: { error: unknown } | undefined;
-    try {
-      await release();
-    } catch (cleanupError) {
-      cleanupFailure = { error: cleanupError };
-    }
-    if (cleanupFailure) {
-      throw new AggregateError(
-        [error, cleanupFailure.error],
-        "Image provider acquisition and cleanup failed",
-        {
-          cause: error,
-        },
-      );
-    }
-    throw error;
-  }
-}
-
-function formatIgnoredImageGenerationOverride(override: ImageGenerationIgnoredOverride): string {
-  return `${sanitizeGeneratedMediaDisplayText(override.key)}=${sanitizeGeneratedMediaDisplayText(override.value)}`;
-}
-
-type ExecutedImageGeneration = {
-  provider: string;
-  model: string;
-  count: number;
-  attachments: AgentGeneratedAttachment[];
-  contentText: string;
-  details: Record<string, unknown>;
-  wakeResult: string;
-};
 
 export async function executeImageGenerationJob(params: {
   effectiveCfg: OpenClawConfig;
@@ -165,8 +51,8 @@ export async function executeImageGenerationJob(params: {
   providerOptions?: ImageGenerationProviderOptions;
   ssrfPolicy?: SsrFPolicy;
   filename?: string;
-  loadedReferenceImages: Array<{ resolvedImage: string; rewrittenFrom?: string }>;
-  taskHandle?: ImageGenerationTaskHandle | null;
+  loadedReferenceImages: LoadedMediaToolReference<ImageGenerationSourceImage>[];
+  taskHandle?: MediaGenerationTaskHandle | null;
   autoProviderFallback?: boolean;
   providers: ImageGenerationProvider[];
 }) {
@@ -204,52 +90,20 @@ export async function executeImageGenerationJob(params: {
       progressSummary: "Saving generated image",
     });
   }
-  const ignoredOverrides = result.ignoredOverrides ?? [];
-  const displayProvider = sanitizeGeneratedMediaDisplayText(result.provider);
-  const displayModel = sanitizeGeneratedMediaDisplayText(result.model);
-  const warning =
-    ignoredOverrides.length > 0
-      ? `Ignored unsupported overrides for ${displayProvider}/${displayModel}: ${ignoredOverrides.map(formatIgnoredImageGenerationOverride).join(", ")}.`
-      : undefined;
-  const normalizedSize =
-    result.normalization?.size?.applied ??
-    (typeof result.metadata?.normalizedSize === "string" && result.metadata.normalizedSize.trim()
-      ? result.metadata.normalizedSize
-      : undefined);
-  const normalizedAspectRatio =
-    result.normalization?.aspectRatio?.applied ??
-    (typeof result.metadata?.normalizedAspectRatio === "string" &&
-    result.metadata.normalizedAspectRatio.trim()
-      ? result.metadata.normalizedAspectRatio
-      : undefined);
-  const normalizedResolution =
-    result.normalization?.resolution?.applied ??
-    (typeof result.metadata?.normalizedResolution === "string" &&
-    result.metadata.normalizedResolution.trim()
-      ? result.metadata.normalizedResolution
-      : undefined);
+  const { displayProvider, displayModel, warning } = describeMediaGenerationResult(result);
+  const {
+    normalizedSize,
+    normalizedAspectRatio,
+    normalizedResolution,
+    sizeTranslatedToAspectRatio,
+  } = resolveMediaGenerationResultGeometry(result, params.size);
   const appliedResolution = result.appliedResolution ?? normalizedResolution;
-  const sizeTranslatedToAspectRatio =
-    result.normalization?.aspectRatio?.derivedFrom === "size" ||
-    (!normalizedSize &&
-      typeof result.metadata?.requestedSize === "string" &&
-      result.metadata.requestedSize === params.size &&
-      Boolean(normalizedAspectRatio));
 
-  const mediaMaxBytes = resolveGeneratedMediaMaxBytes(params.effectiveCfg, "image");
-  const savedImages = await persistGeneratedMediaBatch({
+  const savedImages = await persistGeneratedMediaBuffers({
+    assets: result.images,
     subdir: GENERATED_IMAGE_MEDIA_SUBDIR,
-    mode: "concurrent",
-    saves: result.images.map((image) => async () => {
-      const savedMedia = await saveMediaBuffer(
-        image.buffer,
-        image.mimeType,
-        GENERATED_IMAGE_MEDIA_SUBDIR,
-        mediaMaxBytes,
-        params.filename || image.fileName,
-      );
-      return { value: savedMedia, savedMedia };
-    }),
+    maxBytes: resolveGeneratedMediaMaxBytes(params.effectiveCfg, "image"),
+    filename: params.filename,
   });
 
   const revisedPrompts = result.images
@@ -259,7 +113,7 @@ export async function executeImageGenerationJob(params: {
     type: "image" as const,
     path: image.path,
     mimeType: image.contentType,
-    name: image.id,
+    name: extractOriginalFilename(image.path),
     sizeBytes: image.size,
   }));
   const lines = [
@@ -267,30 +121,15 @@ export async function executeImageGenerationJob(params: {
     ...(warning ? [`Warning: ${warning}`] : []),
     ...formatGeneratedAttachmentLines(attachments),
   ];
-  return {
-    provider: result.provider,
-    model: result.model,
-    count: savedImages.length,
+  const execution = buildMediaGenerateToolExecutionResult({
+    result,
     attachments,
-    contentText: lines.join("\n"),
-    wakeResult: lines.join("\n"),
+    mediaUrls: savedImages.map((media) => media.path),
+    lines,
+    taskHandle: params.taskHandle,
+    warning,
     details: {
-      provider: result.provider,
-      model: result.model,
-      count: savedImages.length,
-      media: {
-        mediaUrls: savedImages.map((image) => image.path),
-        attachments,
-      },
-      attachments,
-      paths: savedImages.map((image) => image.path),
-      ...buildTaskRunDetails(params.taskHandle),
-      ...buildMediaReferenceDetails({
-        entries: params.loadedReferenceImages,
-        singleKey: "image",
-        pluralKey: "images",
-        getResolvedInput: (entry) => entry.resolvedImage,
-      }),
+      ...buildMediaReferenceDetails(params.loadedReferenceImages, "image"),
       ...(appliedResolution ? { resolution: appliedResolution } : {}),
       ...(normalizedSize || (params.size && !sizeTranslatedToAspectRatio)
         ? { size: normalizedSize ?? params.size }
@@ -303,53 +142,12 @@ export async function executeImageGenerationJob(params: {
       ...(params.background ? { background: params.background } : {}),
       ...(params.filename ? { filename: params.filename } : {}),
       ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
-      attempts: result.attempts,
-      ...(result.normalization ? { normalization: result.normalization } : {}),
-      metadata: result.metadata,
-      ...(warning ? { warning } : {}),
-      ...(ignoredOverrides.length > 0 ? { ignoredOverrides } : {}),
-      ...(revisedPrompts.length > 0 ? { revisedPrompts } : {}),
     },
-  } satisfies ExecutedImageGeneration;
-}
-
-export async function loadImageGenerationReferences(params: {
-  imageInputs: string[];
-  maxBytes: number;
-  workspaceDir?: string;
-  sandboxConfig: ReturnType<typeof resolveMediaToolSandboxConfig>;
-  ssrfPolicy?: SsrFPolicy;
-  signal?: AbortSignal;
-}): Promise<
-  Array<{
-    sourceImage: ImageGenerationSourceImage;
-    resolvedImage: string;
-    rewrittenFrom?: string;
-  }>
-> {
-  const loaded = await loadMediaToolReferences<ImageGenerationSourceImage>({
-    inputs: params.imageInputs,
-    toolName: "image_generate",
-    expectedKind: "image",
-    sandbox: params.sandboxConfig,
-    workspaceDir: params.workspaceDir,
-    maxBytes: params.maxBytes,
-    ssrfPolicy: params.ssrfPolicy,
-    signal: params.signal,
-    mapMedia: (media) => ({
-      buffer: media.buffer,
-      mimeType:
-        ("contentType" in media && media.contentType) ||
-        ("mimeType" in media && media.mimeType) ||
-        "image/png",
-    }),
   });
-  return loaded.map(({ source, resolvedInput, rewrittenFrom }) =>
-    Object.assign(
-      { sourceImage: source, resolvedImage: resolvedInput },
-      rewrittenFrom ? { rewrittenFrom } : {},
-    ),
-  );
+  if (revisedPrompts.length > 0) {
+    execution.details.revisedPrompts = revisedPrompts;
+  }
+  return execution;
 }
 
 export async function inferImageGenerationResolution(

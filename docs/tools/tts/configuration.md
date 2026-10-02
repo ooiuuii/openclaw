@@ -50,7 +50,7 @@ or blank, it keeps the base TTS voice.
     providers: {
       elevenlabs: {
         apiKey: "${ELEVENLABS_API_KEY}",
-        model: "eleven_multilingual_v2",
+        modelId: "eleven_multilingual_v2",
         speakerVoiceId: "EXAVITQu4vr4xnSDxMaL",
       },
     },
@@ -85,7 +85,7 @@ or blank, it keeps the base TTS voice.
     providers: {
       google: {
         apiKey: "${GEMINI_API_KEY}",
-        model: "gemini-3.1-flash-tts-preview",
+        model: "gemini-3.8-flash-tts",
         speakerVoice: "Kore",
         // Optional natural-language style prompts:
         // audioProfile: "Speak in a calm, podcast-host tone.",
@@ -204,7 +204,7 @@ or blank, it keeps the base TTS voice.
       },
       elevenlabs: {
         apiKey: "${ELEVENLABS_API_KEY}",
-        model: "eleven_multilingual_v2",
+        modelId: "eleven_multilingual_v2",
         speakerVoiceId: "EXAVITQu4vr4xnSDxMaL",
         voiceSettings: { stability: 0.5, similarityBoost: 0.75, style: 0.0, useSpeakerBoost: true, speed: 1.0 },
         applyTextNormalization: "auto",
@@ -410,7 +410,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\speech_download_models.ps1
 ```
 
-Then point Local CLI at the packaged Kokoro executable:
+`Set-ExecutionPolicy -Scope Process Bypass` lets the unsigned
+`speech_download_models.ps1` run in this shell only. `-Scope Process` does not
+change the machine or user execution policy, and the relaxation ends when the
+shell exits.
+
+Then point Local CLI at the packaged Kokoro executable. Replace `C:\path\to`
+with your extraction directory, and `0.0.11` with the `$Version` you downloaded:
 
 ```json5
 {
@@ -447,13 +453,12 @@ voice, model, persona, or auto-TTS mode. The agent block deep-merges over
     auto: "always",
     provider: "elevenlabs",
     providers: {
-      elevenlabs: { apiKey: "${ELEVENLABS_API_KEY}", model: "eleven_multilingual_v2" },
+      elevenlabs: { apiKey: "${ELEVENLABS_API_KEY}", modelId: "eleven_multilingual_v2" },
     },
   },
   agents: {
     entries: {
       reader: {
-        default: true,
         tts: {
           providers: {
             elevenlabs: { speakerVoiceId: "EXAVITQu4vr4xnSDxMaL" },
@@ -469,7 +474,8 @@ To pin a per-agent persona, set `agents.entries.*.tts.persona` alongside provide
 config — it overrides the global `tts.persona` for that agent only.
 
 Precedence order for automatic replies, `/tts audio`, `/tts status`, and the
-`tts` agent tool:
+`tts` agent tool. Later layers win: each layer deep-merges over the ones above
+it, so the last layer that sets a field decides its value.
 
 1. `tts`
 2. active `agents.entries.*.tts`

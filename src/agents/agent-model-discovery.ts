@@ -1,6 +1,7 @@
 /** Discovers agent models and auth storage with provider/plugin normalization hooks. */
 import path from "node:path";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import type { ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Model } from "../llm/types.js";
 import {
@@ -13,12 +14,8 @@ import type {
   PluginModelCatalogMetadataSnapshot,
   PersistedPluginModelCatalog,
 } from "./plugin-model-catalog.js";
-import {
-  AuthStorage,
-  ModelRegistry,
-  type AuthStorage as AgentAuthStorage,
-  type ModelRegistry as AgentModelRegistry,
-} from "./sessions/index.js";
+import { AuthStorage } from "./sessions/auth-storage.js";
+import { ModelRegistry } from "./sessions/model-registry.js";
 
 const CAPTURED_MODELS_JSON_SOURCE_PATH = "captured:models.json";
 
@@ -27,6 +24,7 @@ type DiscoverModelsOptions = {
   includePluginCatalogs?: boolean;
   modelsJsonContents?: string | null;
   pluginCatalogs?: readonly PersistedPluginModelCatalog[];
+  staticProviderConfigs?: Readonly<Record<string, ModelProviderConfig>>;
   providerFilter?: string;
   pluginMetadataSnapshot?: PluginModelCatalogMetadataSnapshot;
   workspaceDir?: string;
@@ -42,11 +40,11 @@ type DiscoverCapturedModelsOptions = Omit<
 };
 
 function createOpenClawModelRegistry(
-  authStorage: AgentAuthStorage,
+  authStorage: AuthStorage,
   modelsJsonPath: string,
   agentDir: string | undefined,
   options?: DiscoverModelsOptions,
-): AgentModelRegistry {
+): ModelRegistry {
   const pluginMetadataSnapshot = resolveModelPluginMetadataSnapshot({
     ...(options?.config ? { config: options.config } : {}),
     ...(options?.pluginMetadataSnapshot
@@ -66,6 +64,7 @@ function createOpenClawModelRegistry(
       ? { modelsJsonContents: options.modelsJsonContents }
       : {}),
     ...(options?.pluginCatalogs !== undefined ? { pluginCatalogs: options.pluginCatalogs } : {}),
+    staticProviderConfigs: options?.staticProviderConfigs,
   };
   const registry = ModelRegistry.create(authStorage, modelsJsonPath, registryOptions);
   const getAll = registry.getAll.bind(registry);
@@ -93,11 +92,11 @@ function createOpenClawModelRegistry(
   };
 
   registry.getAll = () => {
-    const entries = getAll().filter((entry: Model) => matchesProviderFilter(entry));
+    const entries = getAll().filter(matchesProviderFilter);
     return shouldNormalize ? entries.map(normalizeEntry) : entries;
   };
   registry.getAvailable = () => {
-    const entries = getAvailable().filter((entry: Model) => matchesProviderFilter(entry));
+    const entries = getAvailable().filter(matchesProviderFilter);
     return shouldNormalize ? entries.map(normalizeEntry) : entries;
   };
   registry.find = (provider: string, modelId: string) => {
@@ -123,7 +122,7 @@ function createOpenClawModelRegistry(
 export function discoverAuthStorage(
   agentDir: string,
   options?: DiscoverAuthStorageOptions,
-): AgentAuthStorage {
+): AuthStorage {
   return discoverAuthStorageFacts(agentDir, options).authStorage;
 }
 
@@ -132,7 +131,7 @@ export function discoverAuthStorageFacts(
   agentDir: string,
   options?: DiscoverAuthStorageOptions,
 ): {
-  authStorage: AgentAuthStorage;
+  authStorage: AuthStorage;
   store: import("./auth-profiles/types.js").AuthProfileStore;
   credentials: import("./agent-auth-credentials.js").AgentCredentialMap;
 } {
@@ -143,13 +142,12 @@ export function discoverAuthStorageFacts(
   return { ...facts, authStorage: AuthStorage.inMemory(facts.credentials) };
 }
 
-/** Creates the model registry used by agent model discovery. */
 /** Creates a model registry for one agent directory, optionally filtered and plugin-normalized. */
 export function discoverModels(
-  authStorage: AgentAuthStorage,
+  authStorage: AuthStorage,
   agentDir: string,
   options?: DiscoverModelsOptions,
-): AgentModelRegistry {
+): ModelRegistry {
   return createOpenClawModelRegistry(
     authStorage,
     path.join(agentDir, "models.json"),
@@ -163,9 +161,9 @@ export function discoverModels(
  * Callers may share the resulting immutable catalog snapshot across exact source generations.
  */
 export function discoverModelsFromCapturedSources(
-  authStorage: AgentAuthStorage,
+  authStorage: AuthStorage,
   options: DiscoverCapturedModelsOptions,
-): AgentModelRegistry {
+): ModelRegistry {
   return createOpenClawModelRegistry(authStorage, CAPTURED_MODELS_JSON_SOURCE_PATH, undefined, {
     ...options,
     normalizeModels: false,

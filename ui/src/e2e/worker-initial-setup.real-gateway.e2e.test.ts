@@ -2,7 +2,6 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { SKILL_RESOURCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/skill-resources.js";
-import { WORKER_SKILL_WORKSHOP_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
 import { installSessionPlacementAdmissionProvider } from "../../../src/agents/session-placement-admission.js";
 import { SessionManager } from "../../../src/agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../../src/agents/test-helpers/agent-message-fixtures.js";
@@ -22,15 +21,18 @@ import { createWorkerSessionTurnPlacementProvider } from "../../../src/gateway/w
 import {
   attachedEnvironment,
   credential,
+  dispatchInitialWorkerPlacement,
   ENVIRONMENT_ID,
   MANIFEST_REF,
   measureLaunchTurn,
+  readLaunchToolNames,
   OWNER_EPOCH,
   unusedEnvironments,
 } from "../../../src/gateway/worker-environments/worker-turn-launcher.test-support.js";
 import { createWorkerWorkspaceOperationCoordinator } from "../../../src/gateway/worker-environments/workspace-operation-coordinator.js";
 import { runCommandWithTimeout } from "../../../src/process/exec.js";
 import { createDeferredCore } from "../../../src/shared/deferred.js";
+import { openOpenClawStateDatabase } from "../../../src/state/openclaw-state-db.js";
 import { createOpenClawTestState } from "../../../src/test-utils/openclaw-test-state.js";
 import { getFreePort } from "../../../src/test-utils/ports.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
@@ -125,38 +127,25 @@ suite.define(() => {
         sidecarStartup: "start",
       });
       await gateway.startupSettled;
-      const placements = createWorkerSessionPlacementStore();
+      const database = openOpenClawStateDatabase();
+      const placements = createWorkerSessionPlacementStore({ database });
       const syncing = createDeferredCore();
       const dispatch = coordinateWorkerPlacementDispatch(
         createCoordinatorTestService({
-          dispatch: async (_request, report) => {
-            let placement = placements.startDispatch({ ...scope, executionMode: "worker-turn" });
-            for (const step of [
-              { to: "provisioning", patch: { environmentId: ENVIRONMENT_ID } },
-              { to: "syncing", patch: { workerBundleHash: "a".repeat(64) } },
-              {
-                to: "starting",
-                patch: { remoteWorkspaceDir: workspace, workspaceBaseManifestRef: MANIFEST_REF },
+          dispatch: async (_request, report) =>
+            await dispatchInitialWorkerPlacement({
+              database,
+              placements,
+              identity: { ...scope, executionMode: "worker-turn" },
+              workspace,
+              onTransition: async (placement) => {
+                report?.(placement);
+                if (placement.state === "syncing") {
+                  syncing.resolve();
+                  await release.promise;
+                }
               },
-              { to: "active", patch: { activeOwnerEpoch: OWNER_EPOCH } },
-            ] as const) {
-              placement = placements.transition({
-                sessionId,
-                from: placement.state,
-                expectedGeneration: placement.generation,
-                ...step,
-              });
-              report?.(placement);
-              if (placement.state === "syncing") {
-                syncing.resolve();
-                await release.promise;
-              }
-            }
-            if (placement.state !== "active") {
-              throw new Error("setup fixture did not activate");
-            }
-            return placement;
-          },
+            }),
         }),
         (_request, run) => run(),
       );
@@ -173,6 +162,7 @@ suite.define(() => {
             timeoutMs: 5000,
           }),
         measureLaunchTurn,
+        readLaunchToolNames,
         launchTurn: async (request) => {
           request.onDispatchReady?.();
           launched.push(request.turnClaim.runId);
@@ -183,7 +173,7 @@ suite.define(() => {
               timestamp: Date.now(),
             }),
           );
-          createWorkerSessionPlacementGate(placements).updateAckCursors({
+          await createWorkerSessionPlacementGate(placements).updateAckCursors({
             claim: request.turnClaim,
             transcriptSeq: launched.length * 2,
             liveSeq: launched.length,
@@ -208,12 +198,14 @@ suite.define(() => {
           if (request.source.kind !== "local") {
             throw new Error("expected local fixture source");
           }
-          request.source.journal.commit(MANIFEST_REF);
+          await request.source.journal.commit(MANIFEST_REF);
           return {
             manifestRef: MANIFEST_REF,
             changed: false,
             verifyStable: async () => {},
             verifyLocalStable: async () => {},
+            publishStagedResult: async () => {},
+            discardPreparedStagedResult: async () => {},
           };
         },
         stop: async () => {},
@@ -233,20 +225,22 @@ suite.define(() => {
                   protocolFeatures: [
                     ...environment.bootstrapReceipt!.protocolFeatures,
                     SKILL_RESOURCE_PROTOCOL_FEATURE,
-                    WORKER_SKILL_WORKSHOP_FEATURE,
                   ],
                 },
               };
             },
             acquireTurnCredential: async () => ({ ...credential(), sessionId }),
-            acknowledgeCredentialDelivery: () => true,
+            acknowledgeCredentialDelivery: async () => true,
             startTunnel: async () => tunnel,
           },
           resolveWorkspace: async () => ({ kind: "local", path: workspace }),
           reconcileActivePlacement: async () => {
             throw new Error("unexpected recovery");
           },
-          redispatchReclaimed: async () => {
+          waitForAdmissionNode: async () => {
+            throw new Error("unexpected runtime refresh");
+          },
+          redispatchPlacement: async () => {
             throw new Error("unexpected redispatch");
           },
           workspaceOperations: createWorkerWorkspaceOperationCoordinator(),
@@ -279,11 +273,13 @@ suite.define(() => {
             await composer.fill("Browser input held for setup");
             await page.getByRole("button", { name: "Send message", exact: true }).click();
             await expect
-              .poll(() => listSessionPendingInputs(scope).items.length, { timeout: 15000 })
+              .poll(async () => (await listSessionPendingInputs(scope)).items.length, {
+                timeout: 15000,
+              })
               .toBe(1);
             expect(launched).toEqual([]);
             await expect.poll(() => setupWaiters.length, { timeout: 30000 }).toBe(1);
-            expect(listSessionPendingInputs(scope).items).toHaveLength(1);
+            expect((await listSessionPendingInputs(scope)).items).toHaveLength(1);
             await page.getByText("Received · waiting for worker setup", { exact: true }).waitFor();
             await page.screenshot({
               path: path.join(suite.artifactDir, "01-held-during-setup.png"),
@@ -313,16 +309,22 @@ suite.define(() => {
               timeoutSeconds: 0,
             });
             expect(sent.details).toMatchObject({ status: "accepted", targetDisposition: "queued" });
-            await expect.poll(() => listSessionPendingInputs(scope).items.length).toBe(2);
+            await expect
+              .poll(async () => (await listSessionPendingInputs(scope)).items.length)
+              .toBe(2);
             expect(launched).toEqual([]);
             expect(
-              listSessionPendingInputs(scope).items.every((input) => input.state === "queued"),
+              (await listSessionPendingInputs(scope)).items.every(
+                (input) => input.state === "queued",
+              ),
             ).toBe(true);
             release.resolve();
             await dispatchOperation;
             await expect.poll(() => launched.length, { timeout: 30_000 }).toBe(2);
             expect(new Set(launched).size).toBe(2);
-            await expect.poll(() => listSessionPendingInputs(scope).items.length).toBe(0);
+            await expect
+              .poll(async () => (await listSessionPendingInputs(scope)).items.length)
+              .toBe(0);
             await page
               .getByRole("paragraph")
               .filter({ hasText: /^Worker reply 2$/ })

@@ -1,8 +1,8 @@
 // Control UI tests cover agents utils behavior.
 import { describe, expect, it } from "vitest";
+import { formatAgentRuntimeLabel } from "../../../../src/shared/agent-runtime-display.js";
 import { AVATAR_MAX_DATA_URL_CHARS } from "../../../../src/shared/avatar-limits.js";
 import {
-  assistantAvatarFallbackUrl,
   isRenderableControlUiAvatarUrl,
   resolveAgentAvatarUrl,
   resolveAssistantTextAvatar,
@@ -12,7 +12,6 @@ import {
   buildAgentContext,
   buildModelOptions,
   createPrimaryModelExclusion,
-  formatAgentRuntimeLabel,
   formatBytes,
   listSelectableAgents,
   normalizeAgentLabel,
@@ -424,13 +423,6 @@ describe("resolveEffectiveModelFallbacks", () => {
     };
 
     expect(resolveEffectiveModelFallbacks(entryModel, defaultModel)).toStrictEqual([]);
-  });
-});
-
-describe("assistantAvatarFallbackUrl", () => {
-  it("uses the bundled Molty png for assistant profile fallbacks", () => {
-    expect(assistantAvatarFallbackUrl("/ui")).toBe("/ui/apple-touch-icon.png");
-    expect(assistantAvatarFallbackUrl("")).toBe("/apple-touch-icon.png");
   });
 });
 

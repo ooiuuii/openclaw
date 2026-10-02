@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   materializeCodexDynamicToolSnapshot,
   materializeCodexPromptSnapshot,
@@ -68,12 +68,16 @@ describe("happy path prompt snapshots", () => {
     }
     setStateDirEnv(poisonedStateRoot);
 
+    // Optional media credentials must not widen or cold-load the pinned tool catalog.
+    vi.stubEnv("OPENAI_API_KEY", "test-prompt-snapshot-openai");
+    vi.stubEnv("ZAI_API_KEY", "test-prompt-snapshot-zai");
     pluginLoaderCallsBefore = getPluginModuleLoaderStats().calls;
     generated = await createHappyPathPromptSnapshotFiles();
     pluginLoaderCallsAfter = getPluginModuleLoaderStats().calls;
   }, 300_000);
 
   afterAll(() => {
+    vi.unstubAllEnvs();
     restoreStateDirEnv(stateDirEnv);
     if (poisonedStateRoot) {
       fs.rmSync(poisonedStateRoot, { recursive: true, force: true });
@@ -252,6 +256,7 @@ describe("happy path prompt snapshots", () => {
     const contextTexts: string[] = [];
     // Canonical ASCII keys in Codex's BTreeMap order, independent of the renderer's sorter.
     const keyOrder = [
+      "openclaw_active_computer",
       "openclaw_current_sender",
       "openclaw_source_delivery",
       "openclaw_temporal_context",
@@ -422,7 +427,7 @@ describe("happy path prompt snapshots", () => {
         JSON.stringify({
           models: [
             {
-              slug: "gpt-5.6-sol",
+              slug: "gpt-6-astra",
               model_messages: {
                 instructions_template: "System\n{{ personality }}\nEnd",
                 instructions_variables: {
@@ -447,14 +452,14 @@ describe("happy path prompt snapshots", () => {
 
       expect(result.status).toBe("written");
       expect(
-        fs.readFileSync(path.join(outputDir, "gpt-5.6-sol.pragmatic.instructions.md"), "utf8"),
+        fs.readFileSync(path.join(outputDir, "gpt-6-astra.pragmatic.instructions.md"), "utf8"),
       ).toBe("System\nUse terse engineering judgement.\nEnd\n");
       expect(
         JSON.parse(
-          fs.readFileSync(path.join(outputDir, "gpt-5.6-sol.pragmatic.source.json"), "utf8"),
+          fs.readFileSync(path.join(outputDir, "gpt-6-astra.pragmatic.source.json"), "utf8"),
         ),
       ).toEqual({
-        model: "gpt-5.6-sol",
+        model: "gpt-6-astra",
         personality: "pragmatic",
         source: {
           catalogPath: "<test-catalog>",
