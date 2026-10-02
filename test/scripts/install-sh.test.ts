@@ -2775,7 +2775,9 @@ EOF
       expect(persist.stdout).toContain(`PATH updated in ${join(zshDir, ".zshrc")}`);
       expect(persist.stdout).not.toContain("PATH missing user-local bin dir");
       for (const rc of [".zshrc", ".zprofile"]) {
-        expect(readFileSync(join(zshDir, rc), "utf8")).toBe('export PATH="$HOME/.local/bin:$PATH"\n');
+        expect(readFileSync(join(zshDir, rc), "utf8")).toBe(
+          'export PATH="$HOME/.local/bin:$PATH"\n',
+        );
       }
       if (suffix) {
         expect(existsSync(join(home, ".zshrc"))).toBe(false);
