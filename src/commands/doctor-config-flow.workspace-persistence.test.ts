@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { readAgentRosterProperty } from "../agents/agent-roster.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
-import { readConfigFileSnapshot } from "../config/config.js";
+import { promoteConfigSnapshotToLastKnownGood, readConfigFileSnapshot } from "../config/config.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
 import { makeCronJob } from "../cron/delivery.test-helpers.js";
+import { saveCronJobsStore } from "../cron/store.js";
 import { cronStoreKey } from "../cron/store/key.js";
 import { loadCronRows } from "../cron/store/row-codec.js";
 import {
@@ -37,6 +39,8 @@ describe("Doctor workspace persistence", () => {
               systemPromptOverride: "custom prompt",
               silentReplyRewrite: true,
               silentReply: { direct: true },
+              model: { primary: "openai/gpt-5.6-sol", timeoutMs: 20_000 },
+              subagents: { model: { primary: "openai/gpt-5.6-sol", timeoutMs: 10_000 } },
             },
             entries: {
               ops: {
@@ -45,6 +49,8 @@ describe("Doctor workspace persistence", () => {
                 agentRuntime: {},
                 sandbox: { perSession: true },
                 memorySearch: { store: { path: "old.sqlite" } },
+                model: { primary: "openai/gpt-5.6-sol", timeoutMs: 20_000 },
+                subagents: { model: { primary: "openai/gpt-5.6-sol", timeoutMs: 10_000 } },
               },
             },
           },
@@ -75,6 +81,10 @@ describe("Doctor workspace persistence", () => {
           "agentRuntime",
           "sandbox.perSession",
           "memorySearch.store.path",
+          "agents.defaults.model.timeoutMs",
+          "agents.defaults.subagents.model.timeoutMs",
+          "agents.entries.ops.model.timeoutMs",
+          "agents.entries.ops.subagents.model.timeoutMs",
           "parentForkMaxTokens",
           "relayBindHost",
           "allowPrivateNetwork",
@@ -164,11 +174,12 @@ describe("Doctor workspace persistence", () => {
                 memorySearch: { enabled: false, extraPaths: [path.join(home, "notes")] },
                 sandbox: { scope: "agent", browser: { enableNoVnc: true } },
                 embeddedAgent: { executionContract: "default" },
-                model: { primary: "openai/gpt-5.6-sol", timeoutMs: 20_000 },
+                model: { primary: "openai/gpt-5.6-sol" },
               },
               research: { memory: { search: { provider: "auto" } } },
             };
             const configPath = await writeOpenClawConfig(home, {
+              meta: { migrations: { webhookListeners: true } },
               agents: {
                 ownership: "explicit",
                 defaults: {
@@ -258,11 +269,10 @@ describe("Doctor workspace persistence", () => {
             });
             const before = await readConfigFileSnapshot();
             expect(before.valid).toBe(false);
-            if (legacyId === "main") {
-              expect(resolveAgentWorkspaceDir(before.sourceConfig, "main")).toBe(workspace);
-            } else {
-              expect(before.sourceConfig.agents?.list?.[0]?.id).toBe(legacyId);
-            }
+            expect(readAgentRosterProperty(before.sourceConfig)).toEqual({
+              kind: "list",
+              value: [{ id: legacyId }, { id: "other" }],
+            });
 
             const ctx = await prepareDoctorContext(configPath);
             await runInitialConfigWriteHealth(ctx);
@@ -300,7 +310,7 @@ describe("Doctor workspace persistence", () => {
         });
         const before = await readConfigFileSnapshot();
         expect(before.valid).toBe(false);
-        expect(before.sourceConfig.agents?.list).toHaveLength(1);
+        expect(readAgentRosterProperty(before.sourceConfig)?.value).toHaveLength(1);
 
         const ctx = await prepareDoctorContext(configPath);
         expect(ctx.configResult.shouldWriteConfig).toBe(true);
@@ -361,24 +371,26 @@ describe("Doctor workspace persistence", () => {
             plugins: { enabled: false },
           });
           const storePath = path.join(stateDir, "cron", "jobs.json");
-          await fs.mkdir(path.dirname(storePath), { recursive: true });
-          await fs.writeFile(
-            storePath,
-            JSON.stringify({
-              version: 1,
-              jobs: [
-                makeCronJob({
-                  id: "retained-owner",
-                  enabled: false,
-                  payload: {
-                    kind: "agentTurn",
-                    message: "Do not run this disabled job",
-                    model: "codex/gpt-5.6-sol",
-                  },
-                }),
-              ],
-            }),
-          );
+          await saveCronJobsStore(storePath, {
+            version: 1,
+            jobs: [
+              makeCronJob({
+                id: "retained-owner",
+                enabled: false,
+                payload: {
+                  kind: "agentTurn",
+                  message: "Do not run this disabled job",
+                  model: "codex/gpt-5.6-sol",
+                },
+              }),
+            ],
+          });
+          const seededRows = loadCronRows(openOpenClawStateDatabase().db, cronStoreKey(storePath));
+          expect(seededRows).toHaveLength(1);
+          expect(seededRows[0]?.agent_id).toBeNull();
+          const seededJob: unknown = JSON.parse(seededRows[0]!.job_json);
+          expect(seededJob).not.toHaveProperty("agentId");
+          expect(seededJob).toMatchObject({ payload: { model: "codex/gpt-5.6-sol" } });
 
           let firstPolicies: unknown;
           let firstRows: unknown;
@@ -419,4 +431,48 @@ describe("Doctor workspace persistence", () => {
       );
     });
   });
+
+  it.each(["parsed", "prefixed"])(
+    "refuses retired Talk selectors in %s config before recovery",
+    async (kind) => {
+      await withDoctorConfigPreflightHome(async (home) => {
+        await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+          const canonical = {
+            talk: { realtime: { provider: "openai", speakerVoice: "marin" } },
+            gateway: { mode: "local" },
+            plugins: { enabled: false },
+          };
+          const configPath = await writeOpenClawConfig(home, canonical);
+          expect(await promoteConfigSnapshotToLastKnownGood(await readConfigFileSnapshot())).toBe(
+            true,
+          );
+          const backup = await fs.readFile(configPath, "utf8");
+          await fs.writeFile(`${configPath}.bak`, backup);
+          const retired = {
+            ...canonical,
+            talk: {
+              ...canonical.talk,
+              mode: "realtime",
+              transport: "gateway-relay",
+              brain: "agent-consult",
+              model: "gpt-realtime",
+              voice: "alloy",
+            },
+          };
+          const original = `${kind === "prefixed" ? "Found and updated: False\n" : ""}${JSON.stringify(retired)}\n`;
+          await fs.writeFile(configPath, original);
+          await expect
+            .soft(async () => {
+              await runInitialConfigWriteHealth(await prepareDoctorContext(configPath));
+            })
+            .rejects.toThrow(
+              /talk\.mode, talk\.transport, talk\.brain, talk\.model, talk\.voice[\s\S]*2026\.9\.5[\s\S]*openclaw doctor --fix/,
+            );
+          expect.soft(await fs.readFile(configPath, "utf8")).toBe(original);
+          expect.soft(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(backup);
+          expect.soft(await fs.readFile(`${configPath}.last-good`, "utf8")).toBe(backup);
+        });
+      });
+    },
+  );
 });

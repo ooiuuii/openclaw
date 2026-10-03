@@ -219,7 +219,7 @@ describe("requester settle wake product flow", () => {
     loadConfigMock.mockReset().mockReturnValue({
       agents: {
         defaults: { subagents: { archiveAfterMinutes: 0 } },
-        list: [{ id: "main" }, { id: "research" }],
+        entries: { main: {}, research: {} },
       },
       session: { mainKey: "main", scope: "per-sender" },
     });
@@ -315,7 +315,7 @@ describe("requester settle wake product flow", () => {
       subagentAnnounceDeliveryTesting.setDepsForTest();
       subagentAnnounceOutputTesting.setDepsForTest();
       subagentAnnounceTesting.setDepsForTest();
-      registry.resetSubagentRegistryForTests({ persist: false });
+      await registry.resetSubagentRegistryForTests({ persist: false });
       vi.useRealTimers();
       vi.restoreAllMocks();
       if (previousFastTestEnv === undefined) {
@@ -360,7 +360,7 @@ describe("requester settle wake product flow", () => {
         requesterTurnRunId: params.requesterTurnRunId,
         requesterAgentIdOverride: "main",
         config: {
-          agents: { list: [{ id: "main" }] },
+          agents: { entries: { main: {} } },
           session: { mainKey: "main", scope: "per-sender" },
         },
         callGateway: vi.fn(async () => ({
@@ -932,7 +932,7 @@ describe("requester settle wake product flow", () => {
       // Delete cleanup removed the child session; the cron run reads the captured result.
       chatHistoryBySessionKey.delete(child.childSessionKey);
       if (restart) {
-        registry.resetSubagentRegistryForTests({ persist: false });
+        await registry.resetSubagentRegistryForTests({ persist: false });
         await registry.initSubagentRegistry();
         await registry.activateSubagentRegistry(() => context);
         await flushOwnedWork();

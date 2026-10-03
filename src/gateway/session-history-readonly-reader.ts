@@ -1,8 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  readSessionTranscriptBoundedMessageTailPageFromProjection,
-  type SessionTranscriptBoundedMessageTailOptions,
-} from "../config/sessions/session-accessor.sqlite-active-events.js";
+import { readSessionTranscriptBoundedMessageTailPageFromProjection } from "../config/sessions/session-accessor.sqlite-active-events-read.js";
 import { resolveConversationInDatabase } from "../config/sessions/session-accessor.sqlite-conversation-read.js";
 import { readSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { readSessionTranscriptRunInputVisibilityFromProjection } from "../config/sessions/session-accessor.sqlite-history-input-visibility.js";
@@ -10,6 +7,7 @@ import { readTranscriptDisplayDeltaFromProjection } from "../config/sessions/ses
 import {
   readCurrentProjectionSnapshot,
   type CurrentTranscriptProjection,
+  type SessionTranscriptBoundedMessageTailOptions,
 } from "../config/sessions/session-accessor.sqlite-projection-read.js";
 import { readSessionTranscriptBindingFromProjection } from "../config/sessions/session-accessor.sqlite-transcript-binding.js";
 import type { SessionTranscriptRawDeltaLimits } from "../config/sessions/session-accessor.types.js";
@@ -130,6 +128,13 @@ export function createReadonlySessionHistoryReader(
     return result.value;
   };
   return {
+    readHistoryRevision: () =>
+      readSnapshot((projection) => ({
+        database: projection.database.db,
+        generation: projection.generation,
+        indexedSeq: projection.state.indexedSeq,
+        leafEventId: projection.state.leafEventId,
+      })),
     readTranscriptAccounting: (options: SessionTranscriptAccountingOptions) =>
       readSnapshot((projection) =>
         readSessionTranscriptAccountingFromProjection(projection, options),
