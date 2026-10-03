@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResolvedBrowserConfig, ResolvedBrowserProfile } from "./config.js";
+import { resolveBrowserConfig, type ResolvedBrowserProfile } from "./config.js";
 
 const { spawnMock, readVersionMock, diagnoseMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -59,11 +59,9 @@ function makeProc() {
 }
 
 const resolved = {
-  headless: true,
-  noSandbox: true,
-  extraArgs: [],
+  ...resolveBrowserConfig({ headless: true, noSandbox: true, extraArgs: [] }),
   localLaunchTimeoutMs: 15_000,
-} as ResolvedBrowserConfig;
+};
 const profile = {
   name: "synthetic-early-exit",
   cdpPort: 51114,
