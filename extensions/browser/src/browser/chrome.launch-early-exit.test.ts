@@ -183,6 +183,12 @@ describe("managed Chrome early child exit", () => {
   it("rejects a child that exits while the final diagnostic succeeds", async () => {
     const proc = makeProc();
     spawnMock.mockReturnValue(proc);
+    // Expire discovery before polling so this case owns only the final diagnostic race.
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      now += 15_000;
+      return now;
+    });
     diagnoseMock.mockImplementation(async () => {
       proc.exitCode = 0;
       proc.emit("exit", 0, null);
@@ -191,6 +197,7 @@ describe("managed Chrome early child exit", () => {
     const outcome = launchOpenClawChrome(resolved, profile).catch((error: unknown) => error);
     await vi.runAllTimersAsync();
     expect(String(await outcome)).toContain("code 0");
+    expect(readVersionMock).not.toHaveBeenCalled();
     expect(diagnoseMock).toHaveBeenCalledTimes(1);
   });
 
