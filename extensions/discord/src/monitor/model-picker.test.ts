@@ -837,13 +837,7 @@ describe("Discord model picker rendering", () => {
     );
   });
 
-  it.each([
-    "llama3.2:latest",
-    "a".repeat(100),
-    "a".repeat(101),
-    "😀".repeat(80),
-    "😀".repeat(101),
-  ])(
+  it.each(["llama3.2:latest", "a".repeat(100), "a".repeat(101), "😀".repeat(80), "😀".repeat(101)])(
     "bounds select labels by code point and tokenizes model %s",
     (model) => {
       const data = createModelsProviderData({ ollama: [model] });
