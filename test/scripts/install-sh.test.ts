@@ -3478,8 +3478,8 @@ EOF
       } else {
         expect(result.stdout).not.toContain("reloading it may help");
       }
-      expect(result.stdout).not.toMatch(/(^|run: )source |^    source /m);
-      const command = result.stdout.match(/For this shell, run:\n    (.+)/)?.[1];
+      expect(result.stdout).not.toMatch(/(^|run: )source |^ {4}source /m);
+      const command = result.stdout.match(/For this shell, run:\n {4}(.+)/)?.[1];
       expect(command).toBeTruthy();
       const direct = runInstallShell(`${command}; command -v openclaw; openclaw --version`, {
         HOME: home,
@@ -3518,7 +3518,7 @@ EOF
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain("PATH missing user-local bin dir");
     expect(result.stdout).not.toContain("source ");
-    const command = result.stdout.match(/For this shell, run:\n    (.+)/)?.[1];
+    const command = result.stdout.match(/For this shell, run:\n {4}(.+)/)?.[1];
     expect(command).toBeTruthy();
     expect(command).toMatch(shell === "fish" ? /^set -gx PATH / : /^export PATH=/);
     const executable = runInstallShell(`command -v ${shell}`);

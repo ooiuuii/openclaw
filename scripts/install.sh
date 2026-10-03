@@ -2860,16 +2860,16 @@ warn_shell_path_missing_dir() {
     case "$shell_name" in
         bash|zsh)
             echo "  For this shell, run:"
-            printf '    export PATH=%s:"$PATH"; hash -r\n' "$quoted_dir"
+            printf "    export PATH=%s:\"\$PATH\"; hash -r\n" "$quoted_dir"
             ;;
         fish)
             echo "  For this shell, run:"
-            printf '    set -gx PATH "%s" $PATH\n' "$fish_dir"
+            printf "    set -gx PATH \"%s\" \$PATH\n" "$fish_dir"
             ;;
         *)
             echo "  Add this directory to PATH using your shell's syntax. Examples:"
-            printf '    Bash/zsh: export PATH=%s:"$PATH"; hash -r\n' "$quoted_dir"
-            printf '    Fish: set -gx PATH "%s" $PATH\n' "$fish_dir"
+            printf "    Bash/zsh: export PATH=%s:\"\$PATH\"; hash -r\n" "$quoted_dir"
+            printf "    Fish: set -gx PATH \"%s\" \$PATH\n" "$fish_dir"
             ;;
     esac
     echo "  For future shells, check your shell startup file."
