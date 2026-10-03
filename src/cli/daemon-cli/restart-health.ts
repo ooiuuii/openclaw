@@ -87,6 +87,8 @@ type GatewayRestartWaitOptions = {
   expectedBuildId?: string | null;
   requireRunningService?: boolean;
   requirePluginHealth?: boolean;
+  /** Read-only diagnostics may confirm Windows listeners with unavailable process metadata. */
+  allowUnattributedDiagnosticProbe?: boolean;
   /** Diagnostics can report absence immediately; start/restart callers wait for installation. */
   waitForMissingService?: boolean;
   supervisorKeepsAlive?: boolean;
@@ -256,6 +258,7 @@ export async function waitForGatewayHealthyRestart(
         expectedVersion: params.expectedVersion,
         expectedBuildId: params.expectedBuildId,
         requirePluginHealth: params.requirePluginHealth,
+        allowUnattributedDiagnosticProbe: params.allowUnattributedDiagnosticProbe,
         probeContext,
         configuredProbe,
         probeHosts,
