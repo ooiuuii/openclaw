@@ -550,7 +550,7 @@ export async function performGatewaySessionReset(params: {
     }
   | { ok: false; error: ReturnType<typeof errorShape> }
 > {
-  const resetTarget = resolveSessionResetTarget(getRuntimeConfig(), params);
+  const resetTarget = await resolveSessionResetTarget(getRuntimeConfig(), params);
   if (!resetTarget.ok) {
     return resetTarget;
   }
@@ -689,7 +689,7 @@ export async function performGatewaySessionReset(params: {
   let preparedResetSessionId: string | undefined;
   let preparedLifecycle: SessionLifecycle.PreparedGatewaySessionLifecycle | undefined;
   let lifecyclePreparationCommitted = false;
-  return await runExclusiveSessionLifecycleMutation({
+  return await runExclusiveSessionLifecycleMutation("reset", {
     scope: resetTarget.storePath,
     identities: resetLifecycleIdentities,
     // Mark the mutation first, then interrupt outside the identity lock. This
@@ -1264,7 +1264,7 @@ export async function performGatewaySessionReset(params: {
           }
           return nextEntry;
         },
-        afterEntryMutation: (mutation) => {
+        afterEntryMutation: async (mutation) => {
           if (resetSkipped) {
             return;
           }
@@ -1363,7 +1363,7 @@ export async function performGatewaySessionReset(params: {
             sessionKey: target.canonicalKey ?? params.key,
           });
           if (createdNewEntry) {
-            recordSessionCreated(cfg, {
+            await recordSessionCreated(cfg, {
               sessionKey: target.canonicalKey ?? params.key,
               agentId,
               entry: mutation.nextEntry,
