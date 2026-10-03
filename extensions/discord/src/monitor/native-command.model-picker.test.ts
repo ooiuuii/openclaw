@@ -817,6 +817,25 @@ describe("Discord model picker interactions", () => {
     },
   );
 
+  it("rejects a compact token shared by multiple catalog entries", async () => {
+    const model = "a".repeat(101);
+    const { context, dispatchSpy } = prepareModelPicker(
+      createModelsProviderData({ openai: [model, `${model}b`] }),
+    );
+    const token = "samehash";
+    vi.spyOn(modelPickerModule, "createDiscordModelPickerModelToken").mockReturnValue(token);
+    const selection = await runModelSelect({
+      context,
+      dispatchCommandInteraction: dispatchSpy,
+      data: { cmd: "model", act: "pick", view: "models", u: "owner", p: "openai" },
+      values: [token],
+    });
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(firstMockArg(selection.editReply, "ambiguous model"))).toContain(
+      "Available models changed. Open /models and choose again.",
+    );
+  });
+
   it("rejects a token-valued model missing from the current catalog", async () => {
     const model = "a".repeat(101);
     const { context, dispatchSpy } = prepareModelPicker(
