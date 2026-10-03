@@ -459,5 +459,4 @@ describe("agent runner streaming presentation", () => {
 
     expect(presentation.classifyStreamingPartial({ text })).toEqual({ text, skip: false });
   });
-
 });
