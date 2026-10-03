@@ -18,6 +18,9 @@ function bundledPluginFile(pluginId: string, relativePath: string, suffix = ""):
 // Package scripts, workflows, Docker scenarios, and documented maintainer commands invoke these
 // files by path. They are executable roots rather than importable library modules.
 const repositoryScriptEntries = [
+  "apps/linux/scripts/runtime-boundary.test.mjs!",
+  "apps/linux/scripts/stage-runtime.mjs!",
+  "apps/linux/scripts/stage-runtime.test.mjs!",
   // apps/linux/README.md invokes this live Windows native-browser proof driver by path.
   "apps/linux/scripts/test-inline-browser.mjs!",
   // Linux App CI executes the injected native-auth bridge tests through Node.
@@ -52,7 +55,6 @@ const repositoryScriptEntries = [
   "scripts/test-macos-native.mts!",
   "scripts/check-control-ui-performance.mts!",
   "scripts/check-control-ui-precompressed-assets.mts!",
-  "scripts/check-live-cache.ts!",
   "scripts/check-package-dist-imports.mjs!",
   "scripts/check-plugin-sdk-exports.mts!",
   // Declaration preparation and boundary checks launch this compiler worker by path.
@@ -74,6 +76,8 @@ const repositoryScriptEntries = [
   "scripts/lib/docker-e2e-container.sh!",
   // Docker and package-install harnesses invoke this verifier by path.
   "scripts/docker/verify-fs-safe-native.mjs!",
+  // Docker runtime-assets assembles package-declared bootstrap files through this CLI.
+  "scripts/docker/copy-bootstrap-scripts.mjs!",
   // Reusable Docker workflows invoke this selector from a trusted sparse checkout.
   "scripts/resolve-fs-safe-native-contract.mjs!",
   // The live Docker launcher executes this runner by path inside the package image.

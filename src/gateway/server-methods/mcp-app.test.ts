@@ -624,7 +624,7 @@ describe("MCP App gateway bridge", () => {
     const config = {
       agents: {
         ownership: "explicit",
-        list: [{ id: "ops" }, { id: "research" }],
+        entries: { ops: {}, research: {} },
       },
     };
     const missing = await invoke(
@@ -733,7 +733,7 @@ describe("MCP App gateway bridge", () => {
       {
         agents: {
           ownership: "explicit",
-          list: [{ id: "ops" }, { id: "research" }],
+          entries: { ops: {}, research: {} },
         },
       },
     );
