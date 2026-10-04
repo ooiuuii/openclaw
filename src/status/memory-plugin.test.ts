@@ -23,7 +23,7 @@ describe("resolveMemoryPluginStatus", () => {
     });
   });
 
-  it.each([
+  const enabledCases: { name: string; config: OpenClawConfig; slot: string }[] = [
     { name: "default selection", config: {}, slot: "memory-core" },
     {
       name: "explicitly enabled selected entry",
@@ -56,12 +56,10 @@ describe("resolveMemoryPluginStatus", () => {
       },
       slot: "memory-core",
     },
-  ] satisfies { name: string; config: OpenClawConfig; slot: string }[])(
-    "preserves $name",
-    ({ config, slot }) => {
-      expect(resolveMemoryPluginStatus(config)).toEqual({ enabled: true, slot });
-    },
-  );
+  ];
+  it.each(enabledCases)("preserves $name", ({ config, slot }) => {
+    expect(resolveMemoryPluginStatus(config)).toEqual({ enabled: true, slot });
+  });
 
   it("preserves explicit disablement across normalized entry merges", () => {
     expect(
