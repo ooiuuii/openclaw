@@ -8,8 +8,9 @@ import { ChatQuestionPanel } from "./chat-question-panel.ts";
 
 const listeners: Array<(event: KeyboardEvent) => void> = [];
 afterEach(() => {
-  for (const listener of listeners.splice(0))
+  for (const listener of listeners.splice(0)) {
     document.removeEventListener("keydown", listener, true);
+  }
   document.body.replaceChildren();
 });
 
@@ -110,8 +111,11 @@ it.each(["2", "3"])(
     );
     await panel.updateComplete;
     expect(composer.isConnected).toBe(false);
-    if (key === "2") expect([...props.model.drafts.get("format")!.selected]).toEqual(["Detailed"]);
-    else expect(document.activeElement).toBe(panel.querySelector("textarea"));
+    if (key === "2") {
+      expect([...props.model.drafts.get("format")!.selected]).toEqual(["Detailed"]);
+    } else {
+      expect(document.activeElement).toBe(panel.querySelector("textarea"));
+    }
   },
 );
 
