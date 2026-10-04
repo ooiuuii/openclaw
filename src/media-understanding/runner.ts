@@ -437,7 +437,7 @@ async function activeModelSupportsNativeVision(params: {
 }
 
 async function* resolveAutoAudioEntries(
-  params: AutoModelSelectionParams,
+  params: AutoModelSelectionParams & { language?: string },
 ): AsyncGenerator<ResolvedMediaModelEntry> {
   const activeProvider = normalizeMediaExecutionProviderId(
     params.activeModel?.provider?.trim() ?? "",
@@ -457,7 +457,7 @@ async function* resolveAutoAudioEntries(
       yield { entry };
     }
   }
-  const localAudio = await inspectLocalAudioSelection();
+  const localAudio = await inspectLocalAudioSelection({ language: params.language });
   for (const entry of localAudio.entries) {
     yield { entry };
   }
@@ -902,6 +902,8 @@ export async function runCapability(params: {
         ? resolveAutoAudioEntries({
             ...params,
             providerRegistry,
+            // Auto entries have no entry-level language; keep empty overrides intentional.
+            language: params.request?.language ?? config.language,
           })
         : resolvedEntries,
       automaticAudio,
