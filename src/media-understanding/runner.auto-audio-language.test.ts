@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MediaUnderstandingModelConfig } from "../config/types.tools.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
@@ -7,9 +8,9 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { runCapability } from "./runner.js";
 import { withAudioFixture } from "./runner.test-utils.js";
 
-const runExecMock = vi.hoisted(() => vi.fn());
+const runExecMock = vi.hoisted(() => vi.fn<typeof import("../process/exec.js").runExec>());
 // mock-isolation: Record argv without executing synthetic local audio binaries or host tools.
-vi.mock("../process/exec.js", () => ({ runExec: (...args: unknown[]) => runExecMock(...args) }));
+vi.mock("../process/exec.js", () => ({ runExec: runExecMock }));
 
 type RunParams = Parameters<typeof runCapability>[0];
 
@@ -34,11 +35,17 @@ async function runLocalAudio(options: {
       const outputBase = args[args.indexOf("-of") + 1];
       if (path.parse(executable).name === "whisper" && args.includes("--output_dir")) {
         await fs.writeFile(
-          path.join(outputDir, `${path.parse(args.at(-1) ?? "").name}.txt`),
+          path.join(
+            expectDefined(outputDir, "Whisper output directory"),
+            `${path.parse(args.at(-1) ?? "").name}.txt`,
+          ),
           "fixture transcript",
         );
       } else if (args.includes("-of")) {
-        await fs.writeFile(`${outputBase}.txt`, "fixture transcript");
+        await fs.writeFile(
+          `${expectDefined(outputBase, "whisper.cpp output base")}.txt`,
+          "fixture transcript",
+        );
       }
       return { stdout: "fixture transcript", stderr: "" };
     });
@@ -76,7 +83,8 @@ async function runLocalAudio(options: {
       ([executable]) => executable !== "readelf" && executable !== "otool",
     );
     expect(calls).toHaveLength(1);
-    return { command, args: calls[0][1] as string[] };
+    const call = expectDefined(calls[0], "local audio CLI call");
+    return { command, args: call[1] };
   });
 }
 
