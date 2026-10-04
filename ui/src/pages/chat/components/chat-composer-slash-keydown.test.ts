@@ -75,7 +75,6 @@ function fixture(value: string, caret = value.length) {
     requestUpdate,
     sendShortcut: "enter",
     canSubmitDraft: (next) => Boolean(next.trim()),
-    commitDraft: host.commitDraft,
     syncDraftAfterSend: vi.fn(),
     showAbortableUi: false,
     goalComposer,
