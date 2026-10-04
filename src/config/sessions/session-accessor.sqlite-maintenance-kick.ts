@@ -22,8 +22,13 @@ import {
   captureOpenClawAgentDatabaseExecution,
   supportsOpenClawAgentDatabaseExecution,
 } from "../../state/openclaw-agent-execution.js";
+import {
+  captureOpenClawDatabaseMaintenanceResource,
+  getOpenClawDatabaseMaintenanceScope,
+} from "../../state/openclaw-state-db-async-lifecycle.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
+import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-lifecycle-types.js";
 import {
   SESSION_ENTRY_MAINTENANCE_INTERVAL_MS,
   observeSessionEntryMaintenanceAgeChanges,
@@ -32,7 +37,7 @@ import {
 import { finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort } from "./session-accessor.sqlite-maintenance.js";
 import { runSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-run.js";
 import { SqliteReclamationInputsChangedError } from "./session-accessor.sqlite-reclamation-worker-diagnostics.js";
-import { createSessionMaintenancePlanningOperation } from "./session-accessor.sqlite-reclamation.js";
+import { resolveSessionReclamationDatabaseOptions } from "./session-accessor.sqlite-reclamation.js";
 import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
@@ -59,6 +64,7 @@ type SessionEntryMaintenanceOwner = SessionEntryMaintenanceRequest & {
   ageChanges: Map<string, SessionEntryMaintenanceAgeChange>;
   assertCurrent: () => void;
   captureExecution: () => OpenClawAgentDatabaseExecution | undefined;
+  maintenanceResource?: ReturnType<typeof captureOpenClawDatabaseMaintenanceResource>;
   execution?: OpenClawAgentDatabaseExecution;
   active?: Promise<void>;
   release?: Promise<void>;
@@ -151,6 +157,7 @@ export function kickSessionEntryMaintenanceAfterWrite(
     rejections: 0,
   };
   maintenanceByStore.set(databasePath, created);
+  const maintenanceScope = getOpenClawDatabaseMaintenanceScope();
   const unregister: Array<() => void> = [];
   created.unregisterClose = () => unregister.forEach((release) => release());
   try {
@@ -166,17 +173,22 @@ export function kickSessionEntryMaintenanceAfterWrite(
       );
     }
     for (const resourcePath of new Set([databasePath, identity?.canonicalPath ?? databasePath])) {
-      unregister.push(
-        registerOpenClawAgentDatabaseAsyncResource({
-          agentId: options.agentId,
-          path: resourcePath,
-          revoke: () => retireMaintenanceOwner(databasePath, created),
-          close: async () => {
-            retireMaintenanceOwner(databasePath, created);
-            await created.retirement;
-          },
-        }),
-      );
+      const unregisterResource = registerOpenClawAgentDatabaseAsyncResource({
+        agentId: options.agentId,
+        path: resourcePath,
+        revoke: () => retireMaintenanceOwner(databasePath, created),
+        close: async () => {
+          retireMaintenanceOwner(databasePath, created);
+          await created.retirement;
+        },
+      });
+      unregister.push(unregisterResource);
+      if (maintenanceScope) {
+        created.maintenanceResource ??= captureOpenClawDatabaseMaintenanceResource(
+          unregisterResource,
+          maintenanceScope,
+        );
+      }
     }
   } catch (error) {
     retireMaintenanceOwner(databasePath, created);
@@ -193,6 +205,7 @@ function isMaintenanceOwnerCurrent(
     return false;
   }
   try {
+    owner.maintenanceResource?.assertCurrent();
     owner.assertCurrent();
     return true;
   } catch {
@@ -299,7 +312,16 @@ function scheduleMaintenanceAfterWriteQuiet(
 
 function startPendingMaintenance(databasePath: string, owner: SessionEntryMaintenanceOwner): void {
   // Publish the join before a pass can synchronously retire itself.
-  owner.active = Promise.resolve().then(() => runPendingMaintenance(databasePath, owner));
+  owner.active = Promise.resolve().then(async () => {
+    if (!isMaintenanceOwnerCurrent(databasePath, owner)) {
+      retireMaintenanceOwner(databasePath, owner);
+      return;
+    }
+    // Detach turn context, but keep Doctor/temporary-command database custody
+    // so background borrowing cannot move handles outside their cleanup scope.
+    const run = () => runPendingMaintenance(databasePath, owner);
+    await (owner.maintenanceResource ? owner.maintenanceResource.run(run) : run());
+  });
 }
 
 async function runPendingMaintenance(
@@ -330,12 +352,19 @@ async function runPendingMaintenance(
         const maintenance = owner.maintenanceConfig
           ? normalizeResolvedMaintenanceConfigInput(owner.maintenanceConfig)
           : resolveMaintenanceConfig();
-        const operation =
+        const operation: Extract<
+          SqliteSessionReclamationPlan,
+          { kind: "maintenance-plan" }
+        > | null =
           maintenance.mode === "warn"
             ? null
-            : createSessionMaintenancePlanningOperation({
-                databaseOptions: toDatabaseOptions(owner.scope),
+            : {
+                databaseOptions: resolveSessionReclamationDatabaseOptions(
+                  toDatabaseOptions(owner.scope),
+                ),
                 ageOwner: owner.ageOwner,
+                kind: "maintenance-plan",
+                materializedPlans: [],
                 input: {
                   activeSessionKeys,
                   archiveDirectory: owner.archiveDirectory,
@@ -343,7 +372,7 @@ async function runPendingMaintenance(
                   preservation: null,
                   storePath: owner.storePath,
                 },
-              });
+              };
         return { maintenance, operation };
       },
       "session.maintenance.plan",
