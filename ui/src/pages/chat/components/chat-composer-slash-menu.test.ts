@@ -178,7 +178,7 @@ describe("caret-local slash menu precedence", () => {
     expect(view.host.runCommand).not.toHaveBeenCalled();
   });
 
-  it("retains B62 goal argument Enter policy", () => {
+  it("retains ordinary goal argument Enter dispatch", () => {
     const view = fixture("/goal stat");
     expect(view.state.slashMenuMode).toBe("args");
     expect(view.state.slashMenuArgItems).toEqual(["status"]);

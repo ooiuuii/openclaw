@@ -395,7 +395,8 @@ function submitInlineSlashArgument(
 }
 
 function beginDirectInlineSlashArgument(state: SlashMenuState, host: SlashMenuHost): boolean {
-  if (!host.runInlineCommand) {
+  // The visible inline completion owns Enter before preceding text can become an argument.
+  if (!host.runInlineCommand || (state.slashMenuOpen && state.slashMenuCompletion?.inline)) {
     return false;
   }
   const current = host.getTextarea()?.value ?? host.getDraft();
