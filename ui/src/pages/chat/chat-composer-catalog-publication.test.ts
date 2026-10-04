@@ -153,7 +153,7 @@ async function mountComposer(client: GatewayBrowserClient, paneId = "single") {
   const names = () =>
     Array.from(container.querySelectorAll<HTMLElement>("[role=option] .slash-menu-name"))
       .map((row) => row.textContent?.trim().replace(/^\//u, ""))
-      .filter((name): name is string => name?.startsWith("audit_") === true)
+      .filter((name): name is string => name?.startsWith("audit_"))
       .toSorted();
   const input = (value: string) => {
     const target = textarea();
