@@ -3,8 +3,14 @@ import { ContextProvider } from "@lit/context";
 import { render, type LitElement } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { applicationContext, type ApplicationContext } from "../app/context.ts";
+import {
+  createGatewayHarness,
+  createTestSessionCapability,
+  sessionsResult,
+} from "../lib/sessions/session-capability.test-support.ts";
 import { renderChatPagePaneCell } from "../pages/chat/chat-page-pane-render.ts";
 import { RouteDraftComposerFocus } from "../pages/chat/route-draft-focus-handoff.ts";
+import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import * as activityModule from "./person-activity-data.ts";
 import "./person-reference.ts";
 
@@ -24,6 +30,8 @@ let remove: MockInstance<typeof document.removeEventListener>;
 const hover = () =>
   button.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
 const portal = () => document.querySelector(".person-activity-hovercard");
+const requestCount = (method: string) =>
+  request.mock.calls.filter(([calledMethod]) => calledMethod === method).length;
 const activeDocumentHandlers = () => {
   const registered = new Map<string, Set<unknown>>();
   const changes = [
@@ -67,15 +75,30 @@ beforeEach(async () => {
   routeListeners.clear();
   gatewayListeners.clear();
   activities.length = 0;
-  request = vi.fn().mockResolvedValue({ profiles: [] });
+  request = vi.fn(async (method: string) => {
+    if (method === "users.list") {
+      return { profiles: [] };
+    }
+    if (method === "sessions.list") {
+      return sessionsResult([], 1);
+    }
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const { gateway } = createGatewayHarness(createTestGatewayClient(request));
+  const sessions = createTestSessionCapability(gateway);
+  // Track mention subscriptions separately from the fixture's long-lived session owner.
+  const subscribe = gateway.subscribe;
+  vi.spyOn(gateway, "subscribe").mockImplementation((listener) => {
+    const stop = subscribe(listener);
+    gatewayListeners.add(stop);
+    return () => {
+      stop();
+      gatewayListeners.delete(stop);
+    };
+  });
   const context = {
-    gateway: {
-      snapshot: { phase: "connected", client: { request }, hello: {} },
-      subscribe: (listener: () => void) => {
-        gatewayListeners.add(listener);
-        return () => gatewayListeners.delete(listener);
-      },
-    },
+    gateway,
+    sessions,
     router: {
       subscribe: (listener: () => void) => {
         routeListeners.add(listener);
@@ -117,6 +140,7 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  expect(gatewayListeners.size).toBe(0);
 });
 describe("real PersonReference delayed hover presentation ownership", () => {
   it.each(["hidden", "inert", "aria-hidden"])(
@@ -222,13 +246,20 @@ describe("real PersonReference delayed hover presentation ownership", () => {
     button.dispatchEvent(new PointerEvent("pointercancel"));
     await settle();
     const observed = {
-      requests: request.mock.calls.length,
+      directoryRequests: requestCount("users.list"),
+      rosterRequests: requestCount("sessions.list"),
       routes: routeListeners.size,
       undisposed: activities.filter((a) => a.dispose.mock.calls.length === 0).length,
       handlers: activeDocumentHandlers(),
     };
     console.log("reveal-cleanup", JSON.stringify(observed));
-    expect(observed).toEqual({ requests: 1, routes: 0, undisposed: 0, handlers: 0 });
+    expect(observed).toEqual({
+      directoryRequests: 1,
+      rosterRequests: 1,
+      routes: 0,
+      undisposed: 0,
+      handlers: 0,
+    });
   });
   it("repeated retirement and reveal cycles do not accumulate resources", async () => {
     for (let cycle = 0; cycle < 3; cycle++) {
@@ -244,7 +275,8 @@ describe("real PersonReference delayed hover presentation ownership", () => {
       button.dispatchEvent(new PointerEvent("pointercancel"));
       await settle();
     }
-    expect(request).toHaveBeenCalledTimes(3);
+    expect(requestCount("users.list")).toBe(3);
+    expect(requestCount("sessions.list")).toBe(3);
     expect(routeListeners.size).toBe(0);
     expect(activities.filter((a) => a.dispose.mock.calls.length === 0)).toHaveLength(0);
     expect(activeDocumentHandlers()).toBe(0);
@@ -314,7 +346,8 @@ describe("real PersonReference delayed hover presentation ownership", () => {
     hover();
     await vi.advanceTimersByTimeAsync(250);
     expect(portal()).not.toBeNull();
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(requestCount("users.list")).toBe(1);
+    expect(requestCount("sessions.list")).toBe(1);
     expect(routeListeners.size).toBe(1);
     expect(activities).toHaveLength(1);
     expect(activeDocumentHandlers()).toBe(3);
@@ -352,7 +385,8 @@ describe("real PersonReference delayed hover presentation ownership", () => {
     button = reference.querySelector("button")!;
     hover();
     await vi.advanceTimersByTimeAsync(250);
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(requestCount("users.list")).toBe(1);
+    expect(requestCount("sessions.list")).toBe(1);
     expect(portal()).not.toBeNull();
   });
   it("retires an already mounted card when retained ancestor is hidden", async () => {
