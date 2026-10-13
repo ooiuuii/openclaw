@@ -18,7 +18,9 @@ import {
 import { resolvePluginSubagentCompletionRequester } from "../plugins/runtime/subagent-requester-context.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { PluginOrigin } from "../plugins/types.js";
-import { createBackgroundWorkOwner } from "../process/background-work.js";
+import { enqueueCommandInLane } from "../process/command-queue.js";
+import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
+import { CommandLane } from "../process/lanes.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "./operator-scopes.js";
 import type { GatewayContextResolver, GatewayRequestOptions } from "./server-methods/types.js";
 import {
@@ -220,16 +222,15 @@ export function createGatewaySubagentRuntime(
         await execution.authorize();
         assertCurrent();
         authorizeModelOverride(params);
-        const signals = [params.signal, runtimeLifetime, execution.signal].filter(
-          (signal): signal is AbortSignal => signal !== undefined,
+        const signal = AbortSignal.any(
+          [getGatewayRestartDrainSignal(), params.signal, runtimeLifetime, execution.signal].filter(
+            (candidate): candidate is AbortSignal => candidate !== undefined,
+          ),
         );
-        // Preserve subagent authority while sharing the sessionless inference owner.
-        // Queueing must not outlive the Gateway instance that admitted the plugin.
-        return await createBackgroundWorkOwner({
-          owner: `plugin:${pluginId}`,
-          maxConcurrent: 3,
-        }).enqueue(
-          async (signal) => {
+        return await enqueueCommandInLane(
+          CommandLane.Subagent,
+          async () => {
+            signal.throwIfAborted();
             assertCurrent();
             const [
               { resolveConfiguredAgentId },
@@ -282,11 +283,11 @@ export function createGatewaySubagentRuntime(
                 ...(explicitOverride ? { fallbacksOverride: [] } : {}),
                 run: async (provider, model) => {
                   assertCurrent();
-                  signal.throwIfAborted();
                   runSignal.throwIfAborted();
                   const isSelectedPrimary =
                     provider === selection.provider && model === selection.modelId;
                   const result = await runIsolatedCompletion({
+                    purpose: "plugin-completion",
                     config: cfg,
                     agentId,
                     provider,
@@ -301,7 +302,6 @@ export function createGatewaySubagentRuntime(
                   });
                   runSignal.throwIfAborted();
                   assertCurrent();
-                  signal.throwIfAborted();
                   assertOperatorModelAllowed(execution.operatorAuthority, result);
                   return result;
                 },
@@ -309,7 +309,6 @@ export function createGatewaySubagentRuntime(
             );
             runSignal.throwIfAborted();
             assertCurrent();
-            signal.throwIfAborted();
             const result = fallbackResult.result;
             assertOperatorModelAllowed(execution.operatorAuthority, result);
             finalizePluginLlmCompletion({
@@ -327,7 +326,7 @@ export function createGatewaySubagentRuntime(
             });
             return { text: result.text };
           },
-          { abortSignal: signals.length ? AbortSignal.any(signals) : undefined },
+          { priority: "background", abortSignal: signal },
         );
       } finally {
         execution.release();
@@ -442,9 +441,7 @@ export function createGatewaySubagentRuntime(
       return { runId, sessionKey, ...(runtime ? { runtime } : {}) };
     },
     async waitForRun(params) {
-      const payload = await dispatchGatewayMethodInProcess<
-        Omit<AgentWaitResult, "status"> & { status?: string }
-      >(
+      const payload = await dispatchGatewayMethodInProcess<AgentWaitResult>(
         "agent.wait",
         {
           runId: params.runId,
@@ -452,16 +449,9 @@ export function createGatewaySubagentRuntime(
         },
         { resolveGatewayContext },
       );
-      const { status: rawStatus, error, ...metadata } = payload;
-      let status = rawStatus;
-      if (status === "completed" || status === "succeeded") {
-        status = "ok";
-      } else if (status === "error" && error?.trim().toLowerCase() === "completed") {
-        status = "ok";
-      }
-      if (status !== "ok" && status !== "error" && status !== "timeout" && status !== "pending") {
-        throw new Error(`Gateway agent.wait returned unexpected status: ${rawStatus}`);
-      }
+      const { status: waitStatus, error, ...metadata } = payload;
+      const status =
+        waitStatus === "error" && error?.trim().toLowerCase() === "completed" ? "ok" : waitStatus;
       return {
         ...metadata,
         status,

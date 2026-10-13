@@ -166,8 +166,8 @@ it.for([
       typeof import("../agents/agent-model-discovery.js")
     >("../agents/agent-model-discovery.js");
     const discoverySpy = vi
-      .spyOn(discovery, "discoverModels")
-      .mockImplementation(actualDiscovery.discoverModels);
+      .spyOn(discovery, "discoverModelsAsync")
+      .mockImplementation(actualDiscovery.discoverModelsAsync);
     onTestFinished(() => discoverySpy.mockRestore());
     await prepareGatewayReplyRuntimeForTest({ force: true });
     await writeSessionStore({
@@ -231,6 +231,7 @@ it.for([
           coreBuiltinToolNames: new Set(),
           replaySafeToolNames: new Set(),
           codeModeExecToolNames: new Set(),
+          sourceReplyCapableToolNames: new Set(),
           sideEffectToolOwners: new Map(),
           trustedLocalMediaToolNames: new Set(),
         },

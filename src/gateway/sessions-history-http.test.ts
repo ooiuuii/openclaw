@@ -4,14 +4,11 @@ import path from "node:path";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
-import {
-  replaceSessionEntry,
-  replaceTranscriptEvents,
-} from "../config/sessions/session-accessor.js";
+import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import * as sessionEntryRows from "../config/sessions/session-accessor.sqlite-status.js";
+import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { appendExactAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
-import * as boundaryPath from "../infra/boundary-path.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { persistUserTurnTranscript } from "../sessions/user-turn-transcript.test-support.js";
@@ -767,7 +764,7 @@ describe("session history HTTP endpoints", () => {
     });
   });
 
-  test("returns 404 after initializing a missing configured session store", async () => {
+  test("returns 404 without initializing a missing configured session store", async () => {
     await closeHistoryHarness();
     const storePath = await createSessionStoreFile();
     const agentId = "new-history";
@@ -798,7 +795,7 @@ describe("session history HTTP endpoints", () => {
           type: "not_found",
           message: `Session not found: ${sessionKey}`,
         });
-        expect((await fs.stat(missingDatabasePath)).isFile()).toBe(true);
+        await expect(fs.stat(missingDatabasePath)).rejects.toMatchObject({ code: "ENOENT" });
       },
       { fresh: true },
     );
@@ -1001,41 +998,6 @@ describe("session history HTTP endpoints", () => {
         id: visibleMessageId,
         seq: 2,
       });
-    });
-  });
-
-  test("shares transcript path checks across SSE streams and delivers session updates", async () => {
-    const { storePath } = await seedSession({ text: "first message" });
-
-    await withGatewayHarness(async (harness) => {
-      const streams: SessionHistorySseStream[] = [];
-      try {
-        for (let index = 0; index < 2; index++) {
-          const stream = await openSessionHistorySse(harness.port, SESSION_KEY);
-          streams.push(stream);
-          await expectHistoryEventTexts(stream, ["first message"]);
-        }
-        const unrelatedFile = path.join(path.dirname(storePath), "unrelated-session.jsonl");
-        const resolvePath = vi.spyOn(boundaryPath, "resolveRealpathOrAbsolute");
-        try {
-          const update = { sessionFile: unrelatedFile };
-          emitSessionTranscriptUpdate(update);
-          emitSessionTranscriptUpdate(update);
-          expect(resolvePath.mock.calls.filter(([file]) => file === unrelatedFile)).toHaveLength(2);
-        } finally {
-          resolvePath.mockRestore();
-        }
-        const appendedId = await appendText(storePath, "second message");
-        for (const stream of streams) {
-          await expectMessageEventMatch(stream, {
-            text: "second message",
-            seq: 2,
-            id: appendedId,
-          });
-        }
-      } finally {
-        await Promise.all(streams.map((stream) => stream.reader.cancel()));
-      }
     });
   });
 

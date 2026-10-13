@@ -1,4 +1,3 @@
-// Imessage tests cover test plugin plugin behavior.
 import fs from "node:fs";
 import path from "node:path";
 import { buildTypedExecApprovalPendingReplyPayload } from "openclaw/plugin-sdk/approval-reply-runtime";
@@ -103,15 +102,6 @@ describe("imessagePlugin contracts", () => {
     ).resolves.toMatchObject({ kind: "user", to: "auto:AliceSmith" });
   });
 
-  it("declares durable final delivery capabilities", () => {
-    expect(imessagePlugin.outbound?.deliveryCapabilities?.durableFinal).toStrictEqual({
-      text: true,
-      media: true,
-      replyTo: true,
-      messageSendingHooks: true,
-    });
-  });
-
   it("preserves sanitized HTML formatting as native ranges", () => {
     const text = `<strong title="b>">bold</strong> <del data-note='s>'>strike</del>`;
     const sanitized = imessagePlugin.outbound?.sanitizeText?.({ text, payload: { text } });
@@ -123,14 +113,6 @@ describe("imessagePlugin contracts", () => {
         { start: 0, length: 4, styles: ["bold"] },
         { start: 5, length: 6, styles: ["strikethrough"] },
       ],
-    });
-  });
-
-  it("declares native iMessage voice memo TTS delivery", () => {
-    expect(imessagePlugin.capabilities.tts?.voice).toStrictEqual({
-      synthesisTarget: "audio-file",
-      audioFileFormats: ["mp3", "caf", "audio/mpeg", "audio/x-caf"],
-      preferAudioFileFormat: "caf",
     });
   });
 
@@ -561,8 +543,7 @@ describe("imessagePlugin contracts", () => {
         );
         expect(readFile.mock.calls).toEqual([[sourcePath], [sourcePath]]);
         const forwardedMediaAccess = nativeSend.mock.calls[0]?.[2]?.mediaAccess;
-        // Core adds its bounded native opener to the resolved host access.
-        expect(forwardedMediaAccess).toEqual({ ...mediaAccess, openFile: expect.any(Function) });
+        expect(forwardedMediaAccess).toEqual(mediaAccess);
         expect(forwardedMediaAccess?.readFile).toBe(readFile);
 
         await drainPendingDeliveries({

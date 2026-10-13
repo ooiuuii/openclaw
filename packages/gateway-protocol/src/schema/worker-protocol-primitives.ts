@@ -241,13 +241,20 @@ export function workerMessageSchemas(text: TString, signature: TString, timestam
     provider: WorkerIdentifierSchema,
     model: WorkerIdentifierSchema,
     responseModel: Type.Optional(WorkerIdentifierSchema),
-    responseId: Type.Optional(WorkerIdentifierSchema),
+    responseId: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: WORKER_PROTOCOL_MAX_PAYLOAD_BYTES,
+        pattern: "^\\S(?:.*\\S)?$",
+      }),
+    ),
     providerReplay: Type.Optional(WorkerProviderReplayStateSchema),
     usage: WorkerTranscriptUsageSchema,
     timestamp,
   };
   return {
     image: content.image,
+    operatorMessage: closedObject({ turnScoped: Type.Boolean() }),
     userContent: Type.Array(textOrImage, {
       minItems: 1,
       maxItems: WORKER_TRANSCRIPT_MAX_CONTENT_PARTS,
