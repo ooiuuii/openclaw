@@ -272,20 +272,14 @@ function fingerprintModelCostPricing(
   return createHash("sha256").update(serialized).digest("hex");
 }
 
-export type CapturedModelCostPricing = {
-  fingerprint: () => string;
-  resolve: (provider?: string, model?: string) => ModelCostConfig | undefined;
-};
+export type CapturedModelCostPricing = ReturnType<typeof captureModelCostPricing>;
 
 /** Captures hosted rows, normalization policy, and prices for one usage operation. */
-export function captureModelCostPricing(
-  config?: OpenClawConfig,
-  agentDir?: string,
-): CapturedModelCostPricing {
+export function captureModelCostPricing(config?: OpenClawConfig, agentDir?: string) {
   const pricingContext = resolveModelPricingContext(config);
   return {
     fingerprint: () => fingerprintModelCostPricing(config, agentDir, pricingContext),
-    resolve: (provider, model) =>
+    resolve: (provider?: string, model?: string) =>
       resolveModelCostConfigWithPricing({ provider, model, config, agentDir }, pricingContext),
   };
 }
@@ -376,7 +370,7 @@ export function estimateUsageCost(params: {
 }): number | undefined {
   const usage = params.usage;
   const cost = params.cost;
-  if (!usage || !cost) {
+  if (!usage || !cost || usage.usageReport?.state === "unavailable") {
     return undefined;
   }
   const total = calculateUsageCost(usage, cost).total;
@@ -391,6 +385,9 @@ export function estimateAggregateUsageCost(
   },
 ): number | undefined {
   const usage = params.usage;
+  if (usage?.usageReport?.state === "unavailable") {
+    return undefined;
+  }
   if (usage?.cost && hasRecordedUsageCost(usage.cost)) {
     return usage.cost.total;
   }

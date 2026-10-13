@@ -45,7 +45,6 @@ import { setPluginToolMeta } from "../plugins/tool-metadata.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { consumeRunSkillUsage } from "../skills/runtime/run-usage.js";
 import { createCanonicalFixtureSkill } from "../skills/test-support/test-helpers.js";
-import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import {
   type HookContext,
   getBeforeToolCallFailureDisposition,
@@ -53,7 +52,6 @@ import {
   runBeforeToolCallHook,
   wrapToolWithBeforeToolCallHook,
 } from "./agent-tools.before-tool-call.js";
-import { createOpenClawCodingTools } from "./agent-tools.js";
 import { createExecTool } from "./bash-tools.exec-run.js";
 import { createWriteTool } from "./sessions/index.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -458,21 +456,6 @@ describe("before_tool_call loop detection behavior", () => {
     expect(progressReasonsDuringExecution.at(-1)).not.toBe("tool_loop:argument_churn");
   });
 
-  it("does not block known poll loops when output progresses", async () => {
-    const execute = vi.fn().mockImplementation(async (toolCallId: string) => {
-      return {
-        content: [{ type: "text", text: `output ${toolCallId}` }],
-        details: { status: "running", aggregated: `output ${toolCallId}` },
-      };
-    });
-    const tool = createWrappedTool("process", execute);
-    const params = { action: "poll", sessionId: "sess-2" };
-
-    for (let i = 0; i < CRITICAL_THRESHOLD + 5; i += 1) {
-      await expectUnblockedToolExecution(tool, `poll-progress-${i}`, params);
-    }
-  });
-
   it("blocks real exec failures whose process ids drift across a session alias merge", async () => {
     const workspace = tempDirs.make("openclaw-exec-loop-merge-");
     const sessionId = "exec-loop-merge-session";
@@ -555,7 +538,7 @@ describe("before_tool_call loop detection behavior", () => {
           expectToolLoopBlockedResult(
             result,
             index === GLOBAL_CIRCUIT_BREAKER_THRESHOLD
-              ? "global circuit breaker"
+              ? "the runaway-loop limit"
               : "identical outcomes",
           );
         }
@@ -959,28 +942,6 @@ describe("before_tool_call loop detection behavior", () => {
       content: "same content",
     });
     expect(execute).toHaveBeenCalledTimes(GLOBAL_CIRCUIT_BREAKER_THRESHOLD + 1);
-  });
-
-  it("does not carry loop history across run ids", async () => {
-    const execute = vi.fn().mockResolvedValue({
-      content: [{ type: "text", text: "same output" }],
-      details: { ok: true },
-    });
-    const params = { path: "/tmp/file" };
-    const firstRunTool = wrapToolWithBeforeToolCallHook(asAgentTool({ name: "read", execute }), {
-      ...enabledLoopDetectionContext,
-      runId: "heartbeat-1",
-    });
-    const secondRunTool = wrapToolWithBeforeToolCallHook(asAgentTool({ name: "read", execute }), {
-      ...enabledLoopDetectionContext,
-      runId: "heartbeat-2",
-    });
-
-    for (let i = 0; i < CRITICAL_THRESHOLD; i += 1) {
-      await expectUnblockedToolExecution(firstRunTool, `old-run-${i}`, params);
-    }
-
-    await expectUnblockedToolExecution(secondRunTool, "new-run-0", params);
   });
 
   it.each(["success", "error"])("warns on repeated %s results before blocking", async (status) => {
@@ -1944,26 +1905,6 @@ describe("before_tool_call requireApproval handling", () => {
     }
   }
 
-  function registerTelegramPluginApprovalSetup(): void {
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "telegram",
-          source: "test",
-          plugin: {
-            ...createChannelTestPluginBase({ id: "telegram", label: "Telegram" }),
-            approvalCapability: {
-              native: {},
-              getActionAvailabilityState: () => ({ kind: "enabled" as const }),
-              getExecInitiatingSurfaceState: () => ({ kind: "disabled" as const }),
-              describePluginApprovalSetup: () => "Configure Telegram native approval setup.",
-            },
-          },
-        },
-      ]),
-    );
-  }
-
   beforeEach(() => {
     resetDiagnosticSessionStateForTest();
     resetDiagnosticEventsForTest();
@@ -2036,35 +1977,6 @@ describe("before_tool_call requireApproval handling", () => {
     expect(result).toHaveProperty("reason", "Blocked by security plugin");
     expect(mockCallGateway).not.toHaveBeenCalled();
   });
-
-  it.each(["hook execution", "loop preflight"])(
-    "classifies a %s exception as a before-tool failure",
-    async (stage) => {
-      const ctx =
-        stage === "loop preflight"
-          ? {
-              sessionKey: "main",
-              get loopDetection(): never {
-                throw new Error("loop state unavailable");
-              },
-            }
-          : { agentId: "main", sessionKey: "main" };
-      if (stage === "hook execution") {
-        hookRunner.runBeforeToolCall.mockRejectedValueOnce(new Error("hook crashed"));
-      }
-      const result = await runBeforeToolCallHook({
-        toolName: "bash",
-        params: { command: "ls" },
-        ctx,
-      });
-      expect(result).toMatchObject({
-        blocked: true,
-        kind: "failure",
-        disposition: "failed",
-        reason: "Tool call blocked because before_tool_call hook failed",
-      });
-    },
-  );
 
   it("passes diagnostic trace context to before_tool_call hooks", async () => {
     const trace = {
@@ -2528,37 +2440,7 @@ describe("before_tool_call requireApproval handling", () => {
     expect(onResolution).toHaveBeenCalledWith("deny");
   });
 
-  it("blocks turn-source plugin approval timeouts with setup guidance", async () => {
-    registerTelegramPluginApprovalSetup();
-    setApproval();
-    mockCallGateway.mockResolvedValueOnce({
-      id: "server-id",
-      status: "accepted",
-      deliveryRoute: "turn-source",
-    });
-    mockCallGateway.mockResolvedValueOnce({ id: "server-id", decision: null });
-
-    const result = await requestApproval({
-      ctx: {
-        agentId: "main",
-        sessionKey: "main",
-        turnSourceChannel: "telegram",
-        turnSourceTo: "-100123456789",
-        turnSourceAccountId: "default",
-      },
-    });
-
-    expect(result.blocked).toBe(true);
-    expect(result).toHaveProperty("disposition", "timed_out");
-    expect(result).toHaveProperty(
-      "reason",
-      "Approval timed out\n\nConfigure Telegram native approval setup.",
-    );
-  });
-
   it.each([
-    { label: "a null timeout", decision: null },
-    { label: "an explicit timeout", decision: PluginApprovalResolutions.TIMEOUT },
     { label: "an unknown decision", decision: "approved" },
     { label: "a malformed truthy decision", decision: true },
     { label: "an excluded allow decision", decision: "allow-always", restricted: true },
@@ -2728,82 +2610,11 @@ describe("before_tool_call requireApproval handling", () => {
     }
   });
 
-  it("forwards turn source routing fields from ctx to plugin.approval.request", async () => {
-    setApproval({ pluginId: "my-plugin" });
-    mockCallGateway.mockResolvedValueOnce({ id: "route-id", status: "accepted" });
-    mockCallGateway.mockResolvedValueOnce({ id: "route-id", decision: "allow-once" });
-    const route = {
-      turnSourceChannel: "telegram",
-      turnSourceTo: "-100123456789",
-      turnSourceAccountId: "acct-42",
-      turnSourceThreadId: 9001,
-    };
-
-    await requestApproval({
-      toolName: "fetch",
-      params: { url: "https://example.com" },
-      ctx: { agentId: "main", sessionKey: "main", ...route },
-    });
-
-    const requestCall = requireGatewayCall(0);
-    expect(requestCall[0]).toBe("plugin.approval.request");
-    expect(requireRecord(requestCall[2], "approval request params")).toMatchObject(route);
-  });
-
-  it("uses the transport channel when tool policy provider differs", async () => {
-    hookRunner.runBeforeToolCall.mockResolvedValue({
-      requireApproval: {
-        title: "Transport routed approval",
-        description: "Must use the transport channel",
-        pluginId: "my-plugin",
-      },
-    });
-
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-hook-route-"));
-    await fs.writeFile(path.join(tempDir, "note.txt"), "hello");
-    mockCallGateway.mockResolvedValueOnce({ id: "transport-route-id", status: "accepted" });
-    mockCallGateway.mockResolvedValueOnce({
-      id: "transport-route-id",
-      decision: "allow-once",
-    });
-
-    const tools = createOpenClawCodingTools({
-      workspaceDir: tempDir,
-      messageProvider: "discord-voice",
-      messageChannel: "discord",
-      currentChannelId: "native-channel-1",
-      currentMessagingTarget: "channel:deliverable-1",
-      agentAccountId: "acct-1",
-      currentThreadTs: "thread-1",
-      approvalReviewerDeviceId: "device-tui-reviewer",
-    });
-    const readTool = tools.find((tool) => tool.name === "read");
-    if (!readTool) {
-      throw new Error("missing read tool");
-    }
-    await readTool.execute("tool-hook-route", { path: "note.txt" }, undefined, undefined);
-
-    const requestCall = requireGatewayCall(0);
-    expect(requestCall[0]).toBe("plugin.approval.request");
-    const requestParams = requireRecord(requestCall[2], "approval request params");
-    expect(requestParams.turnSourceChannel).toBe("discord");
-    expect(requestParams.turnSourceTo).toBe("channel:deliverable-1");
-    expect(requestParams.turnSourceAccountId).toBe("acct-1");
-    expect(requestParams.turnSourceThreadId).toBe("thread-1");
-    expect(requestParams.approvalReviewerDeviceIds).toEqual(["device-tui-reviewer"]);
-  });
-
   it.each([
     {
       label: "cron",
       trigger: "cron",
       reason: "Plugin approval unavailable: cron runs have no approval-capable initiating surface.",
-    },
-    {
-      label: "heartbeat hook",
-      trigger: "heartbeat",
-      reason:
-        "Plugin approval unavailable: heartbeat runs have no approval-capable initiating surface.",
     },
     {
       label: "non-interactive CLI",

@@ -74,6 +74,7 @@ suite.define(() => {
       .evaluate((item) => (item as HTMLElement).click());
     const allAgentsQuery = {
       configuredAgentsOnly: true,
+      excludeDock: true,
       includeGlobal: true,
       includeUnknown: false,
       limit: 50,
@@ -126,6 +127,7 @@ suite.define(() => {
     const pageQueryParams = {
       agentId: "main",
       configuredAgentsOnly: true,
+      excludeDock: true,
       includeGlobal: true,
       includeUnknown: false,
       limit: 50,
@@ -210,12 +212,13 @@ suite.define(() => {
     expect(startupAndPageRequests[0]?.params).toEqual({
       agentId: "main",
       configuredAgentsOnly: true,
+      excludeDock: true,
       includeDerivedTitles: true,
       includeGlobal: true,
       includeLastMessage: true,
       includeUnknown: true,
       limit: SIDEBAR_SESSION_ROSTER_LIMIT,
-      rowMode: "compact",
+      rowMode: "sidebar",
       source: "sidebar",
     });
     expect
