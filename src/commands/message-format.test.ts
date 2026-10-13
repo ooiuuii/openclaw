@@ -164,6 +164,49 @@ describe("formatMessageCliText displayLimit", () => {
   });
 });
 
+describe("formatMessageCliText message terminal safety", () => {
+  const text = "\u001b[2Jrelease checklist\u001b]52;c;QQ==\u0007";
+  const author = "\u001b]52;c;QQ==\u0007alice";
+  const timestamp = "\u001b[2J1712345678.123456";
+  const slackMessage = { ts: timestamp, user: author, text };
+  const message = {
+    id: "\u001b[2Jmessage-1",
+    timestamp,
+    author: { username: author },
+    content: text,
+  };
+
+  it.each([
+    {
+      surface: "nested Slack pins",
+      result: {
+        ...pinsResultPayload({ pins: [{ message: slackMessage }] }),
+        channel: "slack" as const,
+      },
+      id: "1712345678.123456",
+    },
+    { surface: "Matrix read", result: readResultPayload({ messages: [message] }), id: "message-1" },
+    { surface: "Matrix pins", result: pinsResultPayload({ pins: [message] }), id: "message-1" },
+    {
+      surface: "Discord search",
+      result: searchResultPayload({ results: { messages: [[message]] } }),
+      id: "message-1",
+    },
+  ])("renders $surface as terminal-safe text without mutating the payload", ({ result, id }) => {
+    const original = structuredClone(result.payload);
+
+    const output = textJoined(formatMessageCliText(result));
+
+    expect(output).toContain("release checklist");
+    expect(output).toContain("alice");
+    expect(output).toContain(id);
+    expect(output).toContain("1712345678.123456");
+    expect(output.replaceAll("\n", "")).not.toMatch(/\p{Cc}/u);
+    expect(output).not.toContain("52;c;QQ==");
+    expect(result.payload).toEqual(original);
+  });
+});
+
 describe("formatMessageCliText reaction labels", () => {
   const label = "\u001b[2J:party_parrot:🦞\nline";
   it.each([{ field: "name", reaction: { name: label, emoji: "unused-emoji", key: "unused-key" } }])(

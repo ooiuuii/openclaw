@@ -107,7 +107,7 @@ function renderMessageList(messages: unknown[], opts: FormatOpts, emptyLabel: st
     return theme.muted(emptyLabel);
   }
 
-  return renderTable({
+  return renderTerminalSafeTable({
     width: opts.width,
     columns: [
       { key: "Time", header: "Time", minWidth: 14 },
