@@ -474,7 +474,8 @@ describe("irc monitor reconnect", () => {
             reconnected.resolve();
           }
           if (patch.lifecycle === "recovering") {
-            (++recoveringCount === 1 ? disconnected : failedReconnect).resolve();
+            recoveringCount += 1;
+            (recoveringCount === 1 ? disconnected : failedReconnect).resolve();
           }
         });
         const server = await startDisconnectingIrcServer(loginError);
