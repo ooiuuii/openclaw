@@ -26,7 +26,6 @@ import { recordOutboundMessageForPromptContext } from "./outbound-message-contex
 import { reactMessageTelegram } from "./send.js";
 import { resolveTelegramTestUpload } from "./send.telegram-http.test-support.js";
 import { wasSentByBot } from "./sent-message-cache.js";
-import { buildTelegramThreadingToolContext } from "./threading-tool-context.js";
 
 describe("Telegram quote selection and accepted reply targets through HTTP", () => {
   const http = createTelegramDispatchHttpFixture();
@@ -784,15 +783,8 @@ describe("Telegram quote selection and accepted reply targets through HTTP", () 
             expect(ref).toBe(channelOptions?.hasRepliedRef);
             expect(ref).not.toBe(previousRef);
 
-            const threading = buildTelegramThreadingToolContext({
-              context: context.ctxPayload,
-              hasRepliedRef: ref,
-            });
-            expect(threading.hasRepliedRef).toBe(ref);
-            // Model the consumer's write, not its reply policy: shared core
-            // threading tests own first/batched/all/explicit send decisions.
+            // The shared message-tool resolver owns consumption; dispatch owns reset.
             ref.value = true;
-            await options?.onAssistantMessageStart?.();
             expect(channelOptions?.hasRepliedRef?.value).toBe(true);
 
             await expectDefined(
