@@ -88,7 +88,9 @@ const MCP_SERVER_MIXED_TRANSPORT_RULES: LegacyConfigRule[] = [
   path,
   message:
     `${path.join(".")} entries cannot define both non-empty "command" and "url" fields. ` +
-    'Run "openclaw doctor --fix" to preserve their historical stdio behavior.',
+    'Run "openclaw doctor --fix" to preserve historical stdio behavior for shared entries. ' +
+    'Entries with oauth.identity "per-requester" require manual repair: choose HTTP-only OAuth ' +
+    "or a separately configured stdio server; doctor does not choose their transport.",
   match: (value) =>
     isRecord(value) &&
     Object.values(value).some((server) => isRecord(server) && hasMixedMcpServerTransports(server)),
@@ -115,6 +117,11 @@ function migrateMixedMcpServerTransports(
   }
   for (const [serverName, server] of Object.entries(servers)) {
     if (!isRecord(server) || !hasMixedMcpServerTransports(server)) {
+      continue;
+    }
+    // Even when auth is missing, dropping requester identity would turn an invalid
+    // entry into shared stdio execution. Preserve it for explicit operator repair.
+    if (isRecord(server.oauth) && server.oauth.identity === "per-requester") {
       continue;
     }
     const removed: string[] = [];
