@@ -423,6 +423,15 @@ deny an ordinary read or grant effect authority. A changed token invalidates eve
 derived cache that depends on that database, including caches in sibling plugin
 instances. The helper does not observe writes by other processes.
 
+For independent data owners in one database,
+`readSqliteDatabaseScopedWriteTokenForPath(path, scope)` retains facts across
+unrelated scoped writes. The worker exports `readSqliteDatabaseScopedWriteToken`
+and `readSqliteDatabasePendingScopedWriteToken` from `sqlite-worker-runtime`;
+use the latter to attach the committed scope receipt to a transaction result.
+Each participating writer names its affected scopes with
+`withSqliteDatabaseWriteScope`. Unscoped writes and schema changes invalidate
+all scope receipts. These tokens describe committed data, never effect authority.
+
 First-party runtime callers use `openOpenClawAgentSqliteWorkerStoreV2` from the
 same subpath to admit cold agent storage without receiving a writable native
 handle. Its required live authority runs inside worker grants and must not read
@@ -569,6 +578,16 @@ allocation closure, but never serialize it or retain it in a durable or reusable
 preparation record. After the attempt closes, the callback rejects retained work.
 Teardown keeps its existing cleanup authority and must still settle an owned
 lease when the requesting run has ended.
+
+Project preparation can return optional `recipePreparation` diagnostics with the
+recipe source, ignored-property note, phase durations, and a failure reason plus
+an output tail of at most 16 KiB. The optional transport callback
+`recordRecipePreparation` records diagnostics before a declared recipe rejects.
+These records contain neither command definitions nor environment values.
+An optional `captureSkipped` reason means detected setup failed best effort:
+continue enrollment, but suppress checkpoint capture for that allocation,
+including later teardown. Keep these recorded facts under the same live
+provisioning authority; they do not grant new allocation or execution authority.
 
 The legacy optional parameter shape remains source-compatible until the next
 declared breaking Plugin SDK revision. It is not a capability-free runtime path:
