@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import {
   getTerminalTableWidth,
@@ -324,7 +325,16 @@ export function formatMessageCliText(
         ? (payload as { messages?: unknown; pins?: unknown })[read ? "messages" : "pins"]
         : undefined;
     if (Array.isArray(messages)) {
-      const table = renderMessageList(messages, formatOpts, read ? "No messages." : "No pins.");
+      // Slack retains the pin envelope; other channels return flat message records.
+      const displayMessages =
+        !read && result.channel === "slack"
+          ? messages.map((pin) => (isRecord(pin) && isRecord(pin.message) ? pin.message : pin))
+          : messages;
+      const table = renderMessageList(
+        displayMessages,
+        formatOpts,
+        read ? "No messages." : "No pins.",
+      );
       const lines = [heading(read ? "Messages" : "Pinned messages"), table];
       const hint = renderPaginationHint(payload, muted);
       if (hint) {
