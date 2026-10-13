@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import type { Message } from "grammy/types";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { createStatusReactionController } from "openclaw/plugin-sdk/channel-feedback";
@@ -25,6 +26,7 @@ import { recordOutboundMessageForPromptContext } from "./outbound-message-contex
 import { reactMessageTelegram } from "./send.js";
 import { resolveTelegramTestUpload } from "./send.telegram-http.test-support.js";
 import { wasSentByBot } from "./sent-message-cache.js";
+import { buildTelegramThreadingToolContext } from "./threading-tool-context.js";
 
 describe("Telegram quote selection and accepted reply targets through HTTP", () => {
   const http = createTelegramDispatchHttpFixture();
@@ -668,4 +670,47 @@ describe("Telegram quote selection and accepted reply targets through HTTP", () 
       "Terminal failure",
     ]);
   });
+
+  it.each(["first", "batched"] as const)(
+    "supplies one %s tool reply slot per turn and resets it for queued followups",
+    async (replyToMode) => {
+      let previousRef: { value: boolean } | undefined;
+      for (let turnIndex = 0; turnIndex < 2; turnIndex++) {
+        const context = createContext();
+        await dispatchProgressTurn(
+          async (options, channelOptions) => {
+            const ref = expectDefined(options?.hasRepliedRef);
+            expect(ref).toEqual({ value: false });
+            expect(ref).toBe(channelOptions?.hasRepliedRef);
+            expect(ref).not.toBe(previousRef);
+
+            const threading = buildTelegramThreadingToolContext({
+              context: context.ctxPayload,
+              hasRepliedRef: ref,
+            });
+            expect(threading.hasRepliedRef).toBe(ref);
+            // Model the consumer's write, not its reply policy: shared core
+            // threading tests own first/batched/all/explicit send decisions.
+            ref.value = true;
+            await options?.onAssistantMessageStart?.();
+            expect(channelOptions?.hasRepliedRef?.value).toBe(true);
+
+            await expectDefined(channelOptions?.onQueuedFollowupAdmitted)();
+            expect(options?.hasRepliedRef).toBe(ref);
+            expect(ref.value).toBe(false);
+            ref.value = true;
+            previousRef = ref;
+          },
+          {
+            context,
+            mode: "off",
+            toolProgress: false,
+            replyToMode,
+            finalReply: { text: `Final answer ${turnIndex}.` },
+          },
+        );
+      }
+      expect([...visibleMessages.values()]).toEqual(["Final answer 0.", "Final answer 1."]);
+    },
+  );
 });
