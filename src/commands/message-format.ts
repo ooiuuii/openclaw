@@ -83,10 +83,18 @@ function renderObjectSummary(payload: unknown, opts: FormatOpts): string {
   }).trimEnd();
 }
 
-function renderMessageList(messages: unknown[], opts: FormatOpts, emptyLabel: string): string {
+function renderMessageList(
+  messages: unknown[],
+  opts: FormatOpts,
+  emptyLabel: string,
+  unwrapMessage = false,
+): string {
   const cap = opts.displayLimit ?? 25;
   const rows = messages.slice(0, cap).map((m) => {
-    const msg = m as Record<string, unknown>;
+    const msg = (unwrapMessage && isRecord(m) && isRecord(m.message) ? m.message : m) as Record<
+      string,
+      unknown
+    >;
     const id = firstNonemptyString(msg, "id", "ts", "messageId");
     const authorObj = msg.author as Record<string, unknown> | undefined;
     const author =
@@ -325,15 +333,11 @@ export function formatMessageCliText(
         ? (payload as { messages?: unknown; pins?: unknown })[read ? "messages" : "pins"]
         : undefined;
     if (Array.isArray(messages)) {
-      // Slack retains the pin envelope; other channels return flat message records.
-      const displayMessages =
-        !read && result.channel === "slack"
-          ? messages.map((pin) => (isRecord(pin) && isRecord(pin.message) ? pin.message : pin))
-          : messages;
       const table = renderMessageList(
-        displayMessages,
+        messages,
         formatOpts,
         read ? "No messages." : "No pins.",
+        !read && result.channel === "slack",
       );
       const lines = [heading(read ? "Messages" : "Pinned messages"), table];
       const hint = renderPaginationHint(payload, muted);

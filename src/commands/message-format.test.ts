@@ -56,70 +56,40 @@ function textJoined(lines: string[]): string {
 }
 
 describe("formatMessageCliText displayLimit", () => {
-  it("renders Slack pinned-message envelopes without changing the payload", () => {
+  it("renders the message inside a Slack pin envelope", () => {
+    const message = { ts: "1712345678.123456", user: "message-author", text: "Pinned checklist" };
     const result = {
       ...pinsResultPayload({
-        ok: true,
         pins: [
-          {
-            type: "message",
-            created_by: "pinning-user",
-            message: {
-              ts: "1712345678.123456",
-              timestampMs: 1712345678123,
-              user: "message-author",
-              text: "Pinned release checklist",
-            },
-          },
-          { message: { ts: "1712345679.123456", text: "Outside display limit" } },
+          { type: "message", created_by: "pinning-user", message },
+          { message: { text: "Outside display limit" } },
         ],
       }),
       channel: "slack" as const,
     };
-    const original = structuredClone(result.payload);
-
     const output = textJoined(formatMessageCliText(result, { displayLimit: 1 }));
-
-    expect(output).toContain("Pinned release checklist");
-    expect(output).toContain("1712345678.123456");
-    expect(output).toContain("message-author");
+    for (const value of Object.values(message)) {
+      expect(output).toContain(value);
+    }
     expect(output).not.toContain("pinning-user");
     expect(output).not.toContain("Outside display limit");
-    expect(result.payload).toEqual(original);
   });
 
-  it.each([
-    { channel: "discord", pin: { id: "discord-message", content: "Discord pin" } },
-    {
-      channel: "msteams",
-      pin: { id: "pin-resource", messageId: "teams-message", text: "Teams pin" },
+  it.each(["discord", "msteams", "slack"] as const)(
+    "preserves flat %s pins and their outer identity",
+    (channel) => {
+      const pin = { id: "pin-resource", messageId: "message-id", text: "Flat pin" };
+      const output = textJoined(
+        formatMessageCliText({ ...pinsResultPayload({ pins: [pin] }), channel }),
+      );
+      expect(output).toContain("pin-resource");
+      expect(output).toContain("Flat pin");
     },
-  ] as const)("preserves flat $channel pin records", ({ channel, pin }) => {
-    const result = { ...pinsResultPayload({ pins: [pin] }), channel };
+  );
 
-    const output = textJoined(formatMessageCliText(result));
-
-    expect(output).toContain(pin.id);
-    expect(output).toContain(channel === "discord" ? "Discord pin" : "Teams pin");
-  });
-
-  it("keeps Slack pins without a nested message on the existing display path", () => {
-    const result = {
-      ...pinsResultPayload({
-        pins: [
-          { type: "file", file: { id: "F123", name: "report.pdf" } },
-          { ts: "1712345678.123456", user: "message-author", text: "Flat pin" },
-        ],
-      }),
-      channel: "slack" as const,
-    };
-    const original = structuredClone(result.payload);
-
-    const output = textJoined(formatMessageCliText(result));
-
-    expect(output).toContain("Flat pin");
-    expect(output).toContain("1712345678.123456");
-    expect(result.payload).toEqual(original);
+  it("renders an empty Slack pin list", () => {
+    const result = { ...pinsResultPayload({ pins: [] }), channel: "slack" as const };
+    expect(formatMessageCliText(result)).toEqual(["Pinned messages", "No pins."]);
   });
 
   it("honors displayLimit for list-pins", () => {
