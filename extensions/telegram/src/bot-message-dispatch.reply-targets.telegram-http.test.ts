@@ -679,7 +679,7 @@ describe("Telegram quote selection and accepted reply targets through HTTP", () 
         const context = createContext();
         await dispatchProgressTurn(
           async (options, channelOptions) => {
-            const ref = expectDefined(options?.hasRepliedRef);
+            const ref = expectDefined(options?.hasRepliedRef, "dispatch tool reply state");
             expect(ref).toEqual({ value: false });
             expect(ref).toBe(channelOptions?.hasRepliedRef);
             expect(ref).not.toBe(previousRef);
@@ -695,7 +695,10 @@ describe("Telegram quote selection and accepted reply targets through HTTP", () 
             await options?.onAssistantMessageStart?.();
             expect(channelOptions?.hasRepliedRef?.value).toBe(true);
 
-            await expectDefined(channelOptions?.onQueuedFollowupAdmitted)();
+            await expectDefined(
+              channelOptions?.onQueuedFollowupAdmitted,
+              "queued followup admission callback",
+            )();
             expect(options?.hasRepliedRef).toBe(ref);
             expect(ref.value).toBe(false);
             ref.value = true;
