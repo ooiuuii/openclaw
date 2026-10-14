@@ -32,6 +32,7 @@ import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../../test-utils/port-claims.js";
+import { leaveExitedWriterWalFamily } from "./update-command-database-rollback.test-support.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 
@@ -185,6 +186,7 @@ function readDatabase(file: string) {
 
 it.each([
   "package",
+  "exited-writer",
   "git",
   "git-edited",
   "verification",
@@ -206,9 +208,12 @@ it.each([
       scenario === "post-migration-write" ||
       scenario === "schema-neutral-write";
     const preservesMigrated = outsideWrite && scenario !== "git-edited";
+    const candidateSchemas =
+      scenario === "schema-neutral-write" ? { state: 15, agent: 21 } : { state: 18, agent: 23 };
     const migratedVersions = scenario === "schema-neutral-write" ? [15, 21] : [18, 23];
     const initialFailure =
       scenario === "package" ||
+      scenario === "exited-writer" ||
       gitInstall ||
       scenario === "verification" ||
       scenario === "serving" ||
@@ -343,7 +348,7 @@ it.each([
   `;
     for (const [root, version, versions] of [
       [packageRoot, "1.0.0", { state: 15, agent: 21 }],
-      [swapFixture.params.stage.packageRoot, "2.0.0", { state: 18, agent: 23 }],
+      [swapFixture.params.stage.packageRoot, "2.0.0", candidateSchemas],
     ] as const) {
       await fs.writeFile(
         path.join(root, "package.json"),
@@ -496,7 +501,7 @@ it.each([
       steps: [],
       durationMs: 0,
       logTail: [],
-      candidateSchemaVersions: { state: 18, agent: 23 },
+      candidateSchemaVersions: candidateSchemas,
       doctorConfigWrites: true,
     });
     vi.spyOn(readiness, "verifyPreviousGatewayForUpdate").mockImplementation(async () => {
@@ -542,6 +547,9 @@ it.each([
           ...swapFixture.params,
           beforeActivate: params.beforeActivate,
           onTransaction: async (transaction) => {
+            if (scenario === "exited-writer") {
+              await leaveExitedWriterWalFamily(agent, path.join(base, "exited-writer"));
+            }
             await params.onTransaction?.(transaction);
             retainedSnapshotDirectory = `${transaction.backupRoot}.databases`;
             if (scenario === "intervening") {
@@ -700,7 +708,7 @@ it.each([
           opts,
           startedAt: Date.now(),
           invocationCwd: base,
-          packageTargetSchemaVersions: { state: 18, agent: 23 },
+          packageTargetSchemaVersions: candidateSchemas,
           shouldRestart: scenario !== "serving",
         };
         const execution = await executeMutableUpdate(await bindExecutionGuards(params));
@@ -710,6 +718,12 @@ it.each([
         if (gitInstall) {
           assert(databaseBackup, "Git update must capture pre-migration databases");
           retainedSnapshotDirectory = databaseBackup.directory;
+        }
+        if (scenario === "exited-writer") {
+          // Capture under maintenance custody must not rebuild the source WAL index.
+          const captured = execution.result.steps.find((step) => step.name === "database snapshot");
+          expect(captured?.warnings ?? []).toEqual([]);
+          expect(databaseBackup?.sourceGenerations[agent]).toEqual(expect.any(String));
         }
         if (restores && initialFailure) {
           expect(databaseBackup?.migration).toMatchObject({
@@ -738,6 +752,7 @@ it.each([
           outsideWrite
             ? "state-migrated-no-rollback"
             : scenario === "package" ||
+                scenario === "exited-writer" ||
                 gitInstall ||
                 scenario === "serving" ||
                 scenario === "config-refused"
