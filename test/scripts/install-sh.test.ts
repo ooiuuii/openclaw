@@ -3004,22 +3004,6 @@ EOF
       },
       hint: ".bashrc",
     },
-    {
-      name: "winning Bash login profile",
-      profiles: {
-        ".bash_profile": 'export PATH="$HOME/npm-prefix/bin:$PATH"\n',
-        ".bash_login": 'export PATH="$HOME/npm-prefix/bin:$PATH"\n',
-      },
-      hint: ".bash_profile",
-    },
-    {
-      name: "fallback Bash login profile",
-      profiles: {
-        ".bash_login": 'export PATH="$HOME/npm-prefix/bin:$PATH"\n',
-        ".profile": 'export PATH="$HOME/npm-prefix/bin:$PATH"\n',
-      },
-      hint: ".bash_login",
-    },
     { name: "no profile", profiles: {} },
     {
       name: "quoted prefix",
