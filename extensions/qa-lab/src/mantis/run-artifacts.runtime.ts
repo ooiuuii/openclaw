@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { hasNodeErrorCode } from "openclaw/plugin-sdk/path-existence-runtime";
 import { root } from "openclaw/plugin-sdk/security-runtime";
 import { isRecord as isPlainObject } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveQaArtifactPath } from "../cli-paths.js";
@@ -14,7 +15,6 @@ type NormalizedScenarioSummary = {
   details?: string;
   screenshotPath?: string;
   status: string;
-  summaryPath: string;
   videoPath?: string;
 };
 
@@ -23,7 +23,6 @@ export type LaneResult = {
   scenarioDetails?: string;
   screenshotPath?: string;
   status: string;
-  summaryPath: string;
   videoPath?: string;
 };
 
@@ -44,10 +43,6 @@ type MantisOutputRoot = Pick<
   Awaited<ReturnType<typeof root>>,
   "exists" | "mkdir" | "move" | "remove" | "stat"
 >;
-
-function isNotFoundError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
 
 async function removeMantisOutputTree(
   outputRoot: MantisOutputRoot,
@@ -136,21 +131,6 @@ async function rollbackMantisStableOutput(params: {
   return { errors: rollbackErrors, retainedBackupEntries };
 }
 
-function createMantisStableRollbackError(
-  publicationError: unknown,
-  rollbackErrors: readonly unknown[],
-  retainedBackupEntries: readonly string[],
-): AggregateError {
-  const retained = retainedBackupEntries.length
-    ? ` Unrestored backups were retained under .mantis-previous-* (${retainedBackupEntries.join(", ")}).`
-    : "";
-  return new AggregateError(
-    [publicationError, ...rollbackErrors],
-    `Mantis stable artifact publication failed and rollback failed.${retained}`,
-    { cause: publicationError },
-  );
-}
-
 export async function publishMantisRunOutput(params: {
   outputRoot: MantisOutputRoot;
   runId: string;
@@ -204,7 +184,14 @@ export async function publishMantisRunOutput(params: {
       staging: params.staging,
     });
     if (rollback.errors.length > 0) {
-      throw createMantisStableRollbackError(error, rollback.errors, rollback.retainedBackupEntries);
+      const retained = rollback.retainedBackupEntries.length
+        ? ` Unrestored backups were retained under .mantis-previous-* (${rollback.retainedBackupEntries.join(", ")}).`
+        : "";
+      throw new AggregateError(
+        [error, ...rollback.errors],
+        `Mantis stable artifact publication failed and rollback failed.${retained}`,
+        { cause: error },
+      );
     }
     throw error;
   }
@@ -239,25 +226,6 @@ function remapPublishedArtifactPath(params: {
   return path.join(params.publishedLaneDir, relativePath);
 }
 
-function resolvePublishedArtifactPath(params: {
-  artifactPath: string | undefined;
-  laneOutputDir: string;
-  laneRepoRoot: string;
-  publishedLaneDir: string;
-}): string | undefined {
-  if (!params.artifactPath) {
-    return undefined;
-  }
-  return remapPublishedArtifactPath({
-    ...params,
-    artifactPath: resolveQaArtifactPath(
-      params.laneRepoRoot,
-      params.laneOutputDir,
-      params.artifactPath,
-    ),
-  });
-}
-
 export function remapMantisLaneResult(params: {
   publishedLaneDir: string;
   result: LaneResult;
@@ -273,7 +241,6 @@ export function remapMantisLaneResult(params: {
     ...params.result,
     outputDir: params.publishedLaneDir,
     screenshotPath: remap(params.result.screenshotPath),
-    summaryPath: remap(params.result.summaryPath) ?? params.result.summaryPath,
     videoPath: remap(params.result.videoPath),
   };
 }
@@ -287,7 +254,7 @@ async function readNormalizedLaneResult(params: {
   try {
     rawSummary = await fs.readFile(summaryPath, "utf8");
   } catch (error) {
-    if (isNotFoundError(error)) {
+    if (hasNodeErrorCode(error, "ENOENT")) {
       return undefined;
     }
     throw error;
@@ -320,7 +287,6 @@ async function readNormalizedLaneResult(params: {
           ? (outcome.status ?? "unknown")
           : "unknown"
         : (entry?.result.status ?? "fail"),
-    summaryPath,
     videoPath: artifacts.find((artifact) => artifact.kind === "video")?.path,
   };
 }
@@ -344,7 +310,6 @@ async function readLegacyLaneSummary(params: {
     screenshotPath:
       typeof artifactPaths?.screenshot === "string" ? artifactPaths.screenshot : undefined,
     status: typeof scenarioSummary?.status === "string" ? scenarioSummary.status : "fail",
-    summaryPath,
     videoPath: typeof artifactPaths?.video === "string" ? artifactPaths.video : undefined,
   };
 }
@@ -356,38 +321,50 @@ export async function readMantisLaneResult(params: {
   scenario: string;
 }): Promise<LaneResult> {
   const summary = (await readNormalizedLaneResult(params)) ?? (await readLegacyLaneSummary(params));
+  const resolveArtifact = (artifactPath: string | undefined) =>
+    artifactPath
+      ? remapPublishedArtifactPath({
+          ...params,
+          artifactPath: resolveQaArtifactPath(
+            params.laneRepoRoot,
+            params.laneOutputDir,
+            artifactPath,
+          ),
+        })
+      : undefined;
   return {
     outputDir: params.publishedLaneDir,
     scenarioDetails: summary.details,
-    screenshotPath: resolvePublishedArtifactPath({
-      ...params,
-      artifactPath: summary.screenshotPath,
-    }),
+    screenshotPath: resolveArtifact(summary.screenshotPath),
     status: summary.status,
-    summaryPath: summary.summaryPath,
-    videoPath: resolvePublishedArtifactPath({ ...params, artifactPath: summary.videoPath }),
+    videoPath: resolveArtifact(summary.videoPath),
   };
 }
 
-export async function copyMantisLaneArtifact(params: {
-  kind: "screenshot" | "video";
+export async function copyMantisLaneArtifacts(params: {
   lane: "baseline" | "candidate";
   result: LaneResult;
-}): Promise<string | undefined> {
-  const artifactPath =
-    params.kind === "screenshot" ? params.result.screenshotPath : params.result.videoPath;
-  if (!artifactPath) {
-    return undefined;
+}): Promise<LaneResult> {
+  const copied = {
+    screenshotPath: params.result.screenshotPath,
+    videoPath: params.result.videoPath,
+  };
+  for (const [field, extension] of [
+    ["screenshotPath", "png"],
+    ["videoPath", "mp4"],
+  ] as const) {
+    const artifactPath = params.result[field];
+    if (!artifactPath) {
+      continue;
+    }
+    const source = path.isAbsolute(artifactPath)
+      ? artifactPath
+      : path.join(params.result.outputDir, artifactPath);
+    const target = path.join(params.result.outputDir, `${params.lane}.${extension}`);
+    await fs.copyFile(source, target);
+    copied[field] = target;
   }
-  const source = path.isAbsolute(artifactPath)
-    ? artifactPath
-    : path.join(params.result.outputDir, artifactPath);
-  const target = path.join(
-    params.result.outputDir,
-    `${params.lane}.${params.kind === "screenshot" ? "png" : "mp4"}`,
-  );
-  await fs.copyFile(source, target);
-  return target;
+  return { ...params.result, ...copied };
 }
 
 export async function stageMantisLaneOutput(sourceDir: string, targetDir: string): Promise<void> {

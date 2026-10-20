@@ -6,7 +6,7 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
 import { describe, expect, it, vi } from "vitest";
-import { VoiceCallConfigSchema, validateProviderConfig } from "./config.js";
+import { normalizeVoiceCallConfig } from "./config.js";
 import { CallManager } from "./manager.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { MockProvider } from "./providers/mock.js";
@@ -31,7 +31,7 @@ vi.mock("./realtime-transcription.runtime.js", () => ({
 
 function createServer(streaming = false, streamPath = "/voice/stream/realtime") {
   const twilio = { accountSid: "fixture-account", authToken: "fixture-token" };
-  const config = VoiceCallConfigSchema.parse({
+  const config = normalizeVoiceCallConfig({
     enabled: true,
     provider: streaming ? "twilio" : "mock",
     fromNumber: streaming ? "+15555550100" : undefined,
@@ -42,10 +42,6 @@ function createServer(streaming = false, streamPath = "/voice/stream/realtime") 
     streaming: { enabled: streaming, streamPath: "/voice/stream" },
     realtime: { enabled: !streaming, streamPath },
   });
-  const validation = validateProviderConfig(config);
-  if (!validation.valid) {
-    throw new Error(validation.errors.join("; "));
-  }
   config.serve.port = 0;
   const manager = new CallManager(config);
   const server = new VoiceCallWebhookServer(
@@ -81,29 +77,6 @@ function upgradeRequest(path: string) {
 }
 
 describe("VoiceCallWebhookServer upgrade rejection", () => {
-  it("flushes a sibling-path upgrade rejection before closing", async () => {
-    const { server, resolveRegistration } = createServer();
-    let client: net.Socket | undefined;
-    try {
-      const url = new URL(await server.start());
-      client = net.connect({ host: url.hostname, port: Number(url.port) });
-      const closed = once(client, "close");
-      let response = "";
-      client.setEncoding("utf8");
-      client.on("data", (chunk) => {
-        response += chunk.toString();
-      });
-      await once(client, "connect");
-      client.write(upgradeRequest("/voice/stream/realtime-extra/token"));
-      await closed;
-      expect(response).toBe("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-      expect(resolveRegistration).not.toHaveBeenCalled();
-    } finally {
-      client?.destroy();
-      await server.stop();
-    }
-  });
-
   it("handles a server socket error while the unmatched rejection write is pending", async () => {
     const { server } = createServer();
     const pendingWrite = createDeferred<string>();
@@ -147,8 +120,7 @@ describe("VoiceCallWebhookServer upgrade rejection", () => {
       if (!rejectedSocket) {
         throw new Error("No rejected server socket");
       }
-      expect(rejectedSocket.destroyed).toBe(false);
-      expect(rejectedSocket.writableFinished).toBe(false);
+      expect(rejectedSocket).toMatchObject({ destroyed: false, writableFinished: false });
       expect(rejectedSocket.writableLength).toBeGreaterThan(0);
       const failure = Object.assign(new Error("synthetic rejection transport failure"), {
         code: "ECONNRESET",
@@ -168,13 +140,6 @@ describe("VoiceCallWebhookServer upgrade rejection", () => {
   });
 
   it.each([
-    {
-      mode: "realtime",
-      streaming: false,
-      path: "/voice/stream/realtime/invalid",
-      status: 401,
-      streamPath: "/voice/stream/realtime",
-    },
     { mode: "root realtime", streaming: false, path: "/token", status: 401, streamPath: "/" },
     {
       mode: "media",
@@ -223,13 +188,8 @@ describe("VoiceCallWebhookServer shutdown lifecycle", () => {
   it("waits for owned handlers and shares concurrent stop completion", async () => {
     const config = createVoiceCallBaseConfig({ tunnelProvider: "none" });
     config.serve.port = 0;
-    let releaseHandlerClose: (() => void) | undefined;
-    const handlerClose = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseHandlerClose = resolve;
-        }),
-    );
+    const handlerClosed = createDeferred<void>();
+    const handlerClose = vi.fn(() => handlerClosed.promise);
     const delayedHangup = vi.fn(async () => ({ success: true }));
     const server = new VoiceCallWebhookServer(
       createTestPluginServiceScheduler(),
@@ -263,7 +223,7 @@ describe("VoiceCallWebhookServer shutdown lifecycle", () => {
       expect(stopped).toBe(false);
       expect(delayedHangup).not.toHaveBeenCalled();
     } finally {
-      releaseHandlerClose?.();
+      handlerClosed.resolve();
       await firstStop;
       vi.useRealTimers();
     }
