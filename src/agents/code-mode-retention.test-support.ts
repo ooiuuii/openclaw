@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { setImmediate } from "node:timers/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { promiseHooks } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Type } from "typebox";
 import { createDeferredCore } from "../shared/deferred.js";
+import { collectForRetentionCheck } from "../test-utils/retention.js";
+import type { CodeModeConfig } from "./code-mode-runtime.js";
 import {
   activeRuns,
+  createCodeModeRunOwner,
   disposeAllCodeModeRuns,
   waitForPendingBridgeSettlement,
   type PendingBridgeState,
@@ -14,8 +17,6 @@ import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
 import { clearToolSearchCatalog, createToolSearchCatalogRef } from "./tool-search.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 
-const gc = globalThis.gc;
-assert.ok(gc, "The retention child requires --expose-gc");
 const started = { done: createDeferredCore(), pending: createDeferredCore() };
 const release = { done: createDeferredCore(), pending: createDeferredCore() };
 const inputs = new Map<string, WeakRef<object>>();
@@ -53,10 +54,13 @@ applyCodeModeCatalog({ ...ctx, tools: [...tools, target] });
 const exec = tools.find((tool) => tool.name === "exec");
 const wait = tools.find((tool) => tool.name === "wait");
 assert.ok(exec && wait);
-function unownedControl() {
-  return new WeakRef({ unowned: true });
+const callerContext = new AsyncLocalStorage<object>();
+async function closeUnrelatedOwner(runConfig: CodeModeConfig) {
+  const caller = { prompt: Buffer.alloc(1024 * 1024, 1) };
+  const references = [new WeakRef(caller), new WeakRef(caller.prompt)];
+  await callerContext.run(caller, () => createCodeModeRunOwner(ctx, runConfig).close());
+  return references;
 }
-const control = unownedControl();
 let pending: PendingBridgeState[] = [];
 try {
   const response = await exec.execute("park-inputs", {
@@ -84,14 +88,15 @@ try {
   assert.ok(completed);
   release.done.resolve();
   await waitForPendingBridgeSettlement([completed], { kind: "awaiting" });
-  // A parked cell still owns responses; completed inputs must not ride along.
-  for (let pass = 0; pass < 8; pass += 1) {
-    await setImmediate();
-    gc();
-  }
-  assert.equal(control.deref(), undefined, "Unowned control must collect");
+  // Closing a different cell rearms expiry, but must not lend its caller to this parked cell.
+  const expiryCaller = await closeUnrelatedOwner(state.config);
+  await collectForRetentionCheck("code-mode-expiry-timer");
   assert.equal(inputs.get("done")?.deref(), undefined, "Settled input must be released");
   assert.ok(inputs.get("pending")?.deref(), "Pending input must remain usable");
+  assert.ok(
+    expiryCaller.every((reference) => reference.deref() === undefined),
+    "The parked cell's expiry timer must release an unrelated completed caller",
+  );
   const retainedPromises: number[] = [];
   for (const count of [100, 2_000]) {
     const promises: WeakRef<Promise<unknown>>[] = [];
@@ -108,10 +113,7 @@ try {
     } finally {
       stopObserving();
     }
-    for (let pass = 0; pass < 8; pass += 1) {
-      await setImmediate();
-      gc();
-    }
+    await collectForRetentionCheck(`code-mode-frontier-${count}`);
     retainedPromises.push(promises.filter((reference) => reference.deref() !== undefined).length);
     assert.equal(inputs.get("fast")?.deref(), undefined, "Completed tool inputs must collect");
     assert.ok(inputs.get("pending")?.deref(), "The original pending input must remain usable");

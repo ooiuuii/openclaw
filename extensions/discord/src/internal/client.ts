@@ -1,26 +1,29 @@
 import type { APIInteraction } from "discord-api-types/v10";
+import { createPermitPool } from "openclaw/plugin-sdk/concurrency-runtime";
 import type { DiscordCommandDeployHashStore } from "../command-deploy-store.js";
 import { DiscordCommandDeployer } from "./command-deploy.js";
 import type { DiscordCommand } from "./commands.js";
 import { ComponentRegistry } from "./component-registry.js";
-import { BaseMessageInteractiveComponent, type Modal } from "./components.js";
+import { BaseMessageInteractiveComponent } from "./components.base.js";
+import type { Modal } from "./components.modal.js";
 import { DiscordEntityCache } from "./entity-cache.js";
-import { DiscordEventQueue, type DiscordEventQueueOptions } from "./event-queue.js";
 import { dispatchInteraction } from "./interaction-dispatch.js";
 import type { GatewayPluginContract, VoicePluginContract } from "./plugin-contract.js";
 import { RequestClient, type RequestClientOptions } from "./rest.js";
 import type { Guild, GuildMember, User } from "./structures.js";
 
-export abstract class Plugin {
-  abstract readonly id: string;
+export type RegisteredPlugin = (GatewayPluginContract | VoicePluginContract) & {
   registerClient?(client: Client): Promise<void> | void;
-}
-
-export type RegisteredPlugin = Plugin & (GatewayPluginContract | VoicePluginContract);
+};
 
 type AnyListener = {
   type: string;
   handle(data: unknown, client: Client): Promise<void> | void;
+};
+
+type DiscordEventQueueOptions = {
+  maxQueueSize?: number;
+  maxConcurrency?: number;
 };
 
 interface ClientOptions {
@@ -29,7 +32,6 @@ interface ClientOptions {
   requestOptions?: RequestClientOptions;
   commandDeployHashStore?: DiscordCommandDeployHashStore;
   eventQueue?: DiscordEventQueueOptions;
-  restCacheTtlMs?: number;
 }
 
 export class Client {
@@ -41,10 +43,11 @@ export class Client {
   componentHandler = new ComponentRegistry<BaseMessageInteractiveComponent>();
   private commandDeployer: DiscordCommandDeployer;
   private entityCache: DiscordEntityCache;
-  private eventQueue?: DiscordEventQueue;
+  private eventQueue?: {
+    permits: ReturnType<typeof createPermitPool>;
+    maxQueueSize: number;
+  };
   modalHandler = new ComponentRegistry<Modal>();
-  shardId?: number;
-  totalShards?: number;
 
   constructor(
     options: ClientOptions,
@@ -66,14 +69,14 @@ export class Client {
     this.commands = handlers.commands ?? [];
     this.listeners = handlers.listeners ?? [];
     this.rest = new RequestClient(options.token, options.requestOptions);
-    this.eventQueue = this.options.eventQueue
-      ? new DiscordEventQueue(this.options.eventQueue)
+    const eventQueue = this.options.eventQueue;
+    this.eventQueue = eventQueue
+      ? {
+          permits: createPermitPool(eventQueue.maxConcurrency ?? 50),
+          maxQueueSize: eventQueue.maxQueueSize ?? 10_000,
+        }
       : undefined;
-    this.entityCache = new DiscordEntityCache({
-      client: this,
-      rest: () => this.rest,
-      ttlMs: this.options.restCacheTtlMs,
-    });
+    this.entityCache = new DiscordEntityCache(this);
     this.commandDeployer = new DiscordCommandDeployer({
       clientId: this.options.clientId,
       commands: this.commands,
@@ -82,11 +85,6 @@ export class Client {
     });
     for (const component of handlers.components ?? []) {
       this.componentHandler.register(component);
-    }
-    for (const command of this.commands) {
-      for (const component of command.components ?? []) {
-        this.componentHandler.register(component);
-      }
     }
     for (const modal of handlers.modals ?? []) {
       this.modalHandler.register(modal);
@@ -102,13 +100,6 @@ export class Client {
   getPlugin(id: string): RegisteredPlugin | undefined;
   getPlugin(id: string): RegisteredPlugin | undefined {
     return this.plugins.find((plugin) => plugin.id === id);
-  }
-
-  getRuntimeMetrics() {
-    return {
-      request: this.rest.getSchedulerMetrics(),
-      eventQueue: this.eventQueue?.getMetrics(),
-    };
   }
 
   async fetchUser(id: string): Promise<User> {
@@ -148,16 +139,32 @@ export class Client {
       }
       return;
     }
+    const queue = this.eventQueue;
     await Promise.all(
-      listeners.map((listener) =>
-        this.eventQueue!.enqueue({
-          eventType: type,
-          listenerName: listener.constructor.name || "AnonymousListener",
-          run: async () => {
-            await listener.handle(data, this);
-          },
-        }),
-      ),
+      listeners.map(async (listener) => {
+        if (queue.permits.pendingCount >= queue.maxQueueSize) {
+          throw new Error(
+            `Discord event queue is full for ${type}; maxQueueSize=${queue.maxQueueSize}`,
+          );
+        }
+        const listenerName = listener.constructor.name || "AnonymousListener";
+        const release = await queue.permits.acquire();
+        const startedAt = Date.now();
+        try {
+          await listener.handle(data, this);
+          const durationMs = Date.now() - startedAt;
+          if (durationMs < 30_000) {
+            return;
+          }
+          console.warn(
+            `[EventQueue] Slow listener detected: ${listenerName} took ${durationMs}ms for event ${type}`,
+          );
+        } catch (error) {
+          console.error(`[EventQueue] Listener ${listenerName} failed for event ${type}:`, error);
+        } finally {
+          release?.();
+        }
+      }),
     );
   }
 }
