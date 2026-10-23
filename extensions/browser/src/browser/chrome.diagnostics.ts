@@ -44,7 +44,6 @@ export type ChromeCdpDiagnostic =
       cdpUrl: string;
       wsUrl: string;
       browser?: string;
-      userAgent?: string;
       elapsedMs: number;
     }
   | {
@@ -155,14 +154,7 @@ function readObjectString(value: unknown, key: string): string | undefined {
 
 function chromeVersionFromCdpResult(result: unknown): ChromeVersion | undefined {
   const browser = readObjectString(result, "Browser") ?? readObjectString(result, "product");
-  const userAgent = readObjectString(result, "User-Agent") ?? readObjectString(result, "userAgent");
-  if (!browser && !userAgent) {
-    return undefined;
-  }
-  return {
-    Browser: browser,
-    "User-Agent": userAgent,
-  };
+  return browser ? { Browser: browser } : undefined;
 }
 
 async function diagnoseCdpHealthCommand(
@@ -308,12 +300,7 @@ export async function diagnoseChromeCdp(
     lookup?: CdpEndpointPin["lookup"],
     version?: ChromeVersion,
   ): Promise<ChromeCdpDiagnostic> => {
-    const health = await diagnoseCdpHealthCommand(wsUrl, handshakeTimeoutMs, lookup, signal).catch(
-      (error: unknown) => {
-        signal?.throwIfAborted();
-        throw error;
-      },
-    );
+    const health = await diagnoseCdpHealthCommand(wsUrl, handshakeTimeoutMs, lookup, signal);
     signal?.throwIfAborted();
     return health.ok
       ? {
@@ -321,7 +308,6 @@ export async function diagnoseChromeCdp(
           cdpUrl,
           wsUrl,
           browser: version?.Browser ?? health.version?.Browser,
-          userAgent: version?.["User-Agent"] ?? health.version?.["User-Agent"],
           elapsedMs: elapsedSince(startedAt),
         }
       : failure(health.code, health.message, wsUrl);

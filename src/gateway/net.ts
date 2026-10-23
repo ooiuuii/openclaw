@@ -1,5 +1,3 @@
-// Gateway network address helpers.
-// Normalizes host/IP inputs and classifies local/private gateway requests.
 import type { IncomingMessage } from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -18,13 +16,11 @@ import { isContainerEnvironment } from "../infra/container-environment.js";
 import {
   pickMatchingExternalInterfaceAddress,
   safeNetworkInterfaces,
-  type NetworkInterfacesSnapshot,
 } from "../infra/network-interfaces.js";
 import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
 import { firstHeaderValue } from "./http-header-value.js";
 import { normalizeWebSocketProtocol } from "./websocket-protocol.js";
 
-/** Pick the primary non-internal IPv4 address, preferring common LAN interface names. */
 export function pickPrimaryLanIPv4(): string | undefined {
   return pickMatchingExternalInterfaceAddress(os.networkInterfaces(), {
     family: "IPv4",
@@ -32,7 +28,6 @@ export function pickPrimaryLanIPv4(): string | undefined {
   });
 }
 
-/** Normalize a raw Host header for gateway origin and local-request checks. */
 export function normalizeHostHeader(hostHeader?: string): string {
   return normalizeLowercaseStringOrEmpty(hostHeader);
 }
@@ -77,22 +72,18 @@ export function hasForwardedRequestHeaders(req?: IncomingMessage): boolean {
   });
 }
 
-/** Return whether a request is a clean loopback request without forwarded identity headers. */
 export function isLocalDirectRequest(req?: IncomingMessage): boolean {
   return Boolean(
     req && !hasForwardedRequestHeaders(req) && isLoopbackAddress(req.socket?.remoteAddress),
   );
 }
 
-export function resolveLocalInterfaceAddressMatch(
-  ip: string | undefined,
-  snapshot?: NetworkInterfacesSnapshot,
-): boolean | undefined {
+export function resolveLocalInterfaceAddressMatch(ip: string | undefined): boolean | undefined {
   const normalized = normalizeIpAddress(ip);
   if (!normalized) {
     return false;
   }
-  const effectiveSnapshot = arguments.length >= 2 ? snapshot : safeNetworkInterfaces();
+  const effectiveSnapshot = safeNetworkInterfaces();
   if (!effectiveSnapshot) {
     return undefined;
   }
@@ -344,7 +335,6 @@ export async function resolveGatewayListenHosts(
   return [bindHost];
 }
 
-/** Returns every address whose bind must succeed for Gateway startup to succeed. */
 export function resolveGatewayRequiredListenHosts(bindHost: string): string[] {
   if (!isValidIPv4(bindHost) || bindHost === "0.0.0.0" || bindHost === "127.0.0.1") {
     return [bindHost];

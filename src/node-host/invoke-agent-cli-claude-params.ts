@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SystemRunApprovalPlan } from "../infra/exec-approvals.js";
 import { decodeNodeInvokeParams } from "./invoke-payload.js";
@@ -107,22 +108,23 @@ const CLEAR_ENV_ALLOWLIST = new Set([
   "OTEL_TRACES_EXPORTER",
 ]);
 
-export type ClaudeCliNodeRunParams = {
-  /** Opt-in to the negotiated invocation-owned resource and Workshop duplex. */
-  skillRuntime?: true;
-  argv: string[];
-  stdin?: string;
-  cwd?: string;
-  env?: Record<string, string>;
-  clearEnv?: string[];
-  systemPrompt?: string;
-  agentId?: string;
-  sessionKey?: string;
-  approvalDecision?: "allow-once" | "allow-always";
-  systemRunPlan?: SystemRunApprovalPlan;
-  idleTimeoutMs: number;
-  timeoutMs: number;
-};
+const ALLOWED_PARAMS = new Set([
+  "argv",
+  "stdin",
+  "cwd",
+  "env",
+  "clearEnv",
+  "systemPrompt",
+  "agentId",
+  "sessionKey",
+  "approvalDecision",
+  "systemRunPlan",
+  "idleTimeoutMs",
+  "timeoutMs",
+  "skillRuntime",
+]);
+
+export type ClaudeCliNodeRunParams = Awaited<ReturnType<typeof decodeClaudeCliNodeRunParams>>;
 
 export type ClaudeCliNodeRunResult = {
   exitCode: number;
@@ -198,17 +200,11 @@ export function requestsClaudeNodeSkillRuntime(raw?: string | null): boolean {
   if (!raw || Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BYTES) {
     return false;
   }
-  try {
-    return asRecord(JSON.parse(raw))?.skillRuntime === true;
-  } catch {
-    return false;
-  }
+  return safeParseJsonRecord(raw)?.skillRuntime === true;
 }
 
 /** Resource bytes use the negotiated duplex, never argv or node filesystem paths. */
-export async function decodeClaudeCliNodeRunParams(
-  raw?: string | null,
-): Promise<ClaudeCliNodeRunParams> {
+export async function decodeClaudeCliNodeRunParams(raw?: string | null) {
   if (Buffer.byteLength(raw ?? "", "utf8") > MAX_REQUEST_BYTES) {
     throw new Error("INVALID_REQUEST: Claude CLI request is too large");
   }
@@ -216,22 +212,7 @@ export async function decodeClaudeCliNodeRunParams(
   if (!value) {
     throw new Error("INVALID_REQUEST: Claude CLI params must be an object");
   }
-  const allowed = new Set([
-    "argv",
-    "stdin",
-    "cwd",
-    "env",
-    "clearEnv",
-    "systemPrompt",
-    "agentId",
-    "sessionKey",
-    "approvalDecision",
-    "systemRunPlan",
-    "idleTimeoutMs",
-    "timeoutMs",
-    "skillRuntime",
-  ]);
-  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  const unknown = Object.keys(value).find((key) => !ALLOWED_PARAMS.has(key));
   if (unknown) {
     throw new Error(`INVALID_REQUEST: unknown Claude CLI parameter: ${unknown}`);
   }
@@ -243,7 +224,7 @@ export async function decodeClaudeCliNodeRunParams(
   const systemPrompt = optionalBoundedString(value.systemPrompt, "systemPrompt", MAX_REQUEST_BYTES);
   const agentId = optionalBoundedString(value.agentId, "agentId", MAX_ARG_BYTES);
   const sessionKey = optionalBoundedString(value.sessionKey, "sessionKey", MAX_ARG_BYTES);
-  const approvalDecision =
+  const approvalDecision: "allow-once" | "allow-always" | undefined =
     value.approvalDecision === "allow-once" || value.approvalDecision === "allow-always"
       ? value.approvalDecision
       : undefined;
