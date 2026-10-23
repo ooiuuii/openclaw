@@ -177,6 +177,16 @@ export const NEW_SESSION_LIST_LOADING_MESSAGE =
 export const NEW_SESSION_CREATE_FAILED_MESSAGE =
   "New Chat could not create a new thread. Try again in a moment.";
 
+// Expanded questions own only their advertised, enabled numeric shortcuts.
+function questionOwnsNumericShortcut(target: HTMLElement, key: string): boolean {
+  return (
+    /^[1-9]$/u.test(key) &&
+    target.matches(
+      `[data-chat-autotype-shortcuts="active"]:has([data-shortcut="${key}"]:not(:disabled))`,
+    )
+  );
+}
+
 function keyboardEventPathHasInteractiveTarget(event: KeyboardEvent): boolean {
   return event
     .composedPath()
@@ -186,6 +196,7 @@ function keyboardEventPathHasInteractiveTarget(event: KeyboardEvent): boolean {
         (target.matches("dialog[open], [aria-modal='true']") ||
           target.matches(CHAT_PRINTABLE_KEY_TARGET_SELECTOR) ||
           menuOwnsShortcut(target, event.key) ||
+          questionOwnsNumericShortcut(target, event.key) ||
           (event.key === " " && target.matches(CHAT_SPACE_ACTIVATION_SELECTOR))),
     );
 }
