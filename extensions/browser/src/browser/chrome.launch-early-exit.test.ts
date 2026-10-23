@@ -1,7 +1,13 @@
+import type * as ChildProcessModule from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import type * as TimerPromises from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveBrowserConfig, type ResolvedBrowserProfile } from "./config.js";
+import type * as SecurityRuntime from "openclaw/plugin-sdk/security-runtime";
+import type * as CdpHelpers from "./cdp.helpers.js";
+import type * as ChromeDiagnostics from "./chrome.diagnostics.js";
+import type { ResolvedBrowserProfile } from "./config.js";
+import { resolveBrowserConfig } from "./config.js";
 
 const { spawnMock, readVersionMock, diagnoseMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -10,20 +16,42 @@ const { spawnMock, readVersionMock, diagnoseMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("node:child_process", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:child_process")>()),
+  ...(await importOriginal<typeof ChildProcessModule>()),
   spawn: spawnMock,
 }));
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof TimerPromises>()),
+  // Promise-based polling must share the fake clock installed before each test.
+  setTimeout: (delayMs = 0, value?: unknown, options?: { signal?: AbortSignal }) => {
+    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    const signal = options?.signal;
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve(value);
+    }, delayMs);
+    if (signal?.aborted) {
+      abort();
+    } else {
+      signal?.addEventListener("abort", abort, { once: true });
+    }
+    return promise;
+  },
+}));
 vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>()),
+  ...(await importOriginal<typeof SecurityRuntime>()),
   ensurePortAvailable: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./chrome.diagnostics.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./chrome.diagnostics.js")>()),
+  ...(await importOriginal<typeof ChromeDiagnostics>()),
   readChromeVersionWithCredentialFallback: readVersionMock,
   diagnoseChromeCdp: diagnoseMock,
 }));
 vi.mock("./cdp.helpers.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./cdp.helpers.js")>()),
+  ...(await importOriginal<typeof CdpHelpers>()),
   assertCdpEndpointAllowed: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./cdp-proxy-bypass.js", () => ({
