@@ -11,7 +11,6 @@ export function questionDraftValues(
   return [...(draft?.selected ?? []), ...custom];
 }
 
-
 /** Defaults initialize presentation once; revisiting a field never restores a cleared answer. */
 export function initializeQuestionDrafts(
   questions: readonly Question[],
