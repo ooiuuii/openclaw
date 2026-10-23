@@ -10,6 +10,7 @@ import { ensurePortAvailable, type SsrFPolicy } from "openclaw/plugin-sdk/securi
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { CONFIG_DIR, sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { createBoundedUtf8Tail } from "./bounded-utf8-tail.js";
 import { hasChromeProxyControlArg, omitChromeProxyEnv } from "./browser-proxy-mode.js";
 import { assertManagedProxyAllowsCdpUrl } from "./cdp-proxy-bypass.js";
 import {
@@ -37,8 +38,6 @@ import {
 } from "./cdp.helpers.js";
 import {
   type ChromeCdpDiagnostic,
-  chromeLaunchHints,
-  createChromeLaunchStderrDiagnostics,
   diagnoseChromeCdp,
   formatChromeCdpDiagnostic,
   type ChromeVersion,
@@ -85,14 +84,56 @@ const CHROME_SINGLETON_LOCK_PATHS = [
   "SingletonSocket",
   "SingletonCookie",
 ] as const;
+const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another chromium process/i;
+const CHROME_MISSING_DISPLAY_PATTERN = /missing x server|\$DISPLAY/i;
 const CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS = 500;
 const CHROME_LAUNCH_STDERR_TAIL_MAX_BYTES = 64 * 1024;
+const CHROME_STDERR_MARKER_SCAN_TAIL_CHARS = 256;
 const CHROME_HTTP_DISCOVERY_FAILURE_CODES = new Set([
   "ssrf_blocked",
   "http_unreachable",
   "http_status_failed",
   "invalid_json",
 ]);
+
+type ChromeLaunchStderrSignals = {
+  singletonInUse: boolean;
+  missingDisplay: boolean;
+};
+
+function createChromeLaunchStderrDiagnostics() {
+  const tail = createBoundedUtf8Tail(CHROME_LAUNCH_STDERR_TAIL_MAX_BYTES);
+  const signals: ChromeLaunchStderrSignals = {
+    singletonInUse: false,
+    missingDisplay: false,
+  };
+  let markerScanTail = "";
+
+  return {
+    append(chunk: Buffer | string) {
+      tail.append(chunk);
+      const chunkText = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk;
+      if (chunkText.length > 0) {
+        const scanText = `${markerScanTail}${chunkText}`;
+        signals.singletonInUse ||= CHROME_SINGLETON_IN_USE_PATTERN.test(scanText);
+        signals.missingDisplay ||= CHROME_MISSING_DISPLAY_PATTERN.test(scanText);
+        markerScanTail = scanText.slice(-CHROME_STDERR_MARKER_SCAN_TAIL_CHARS);
+      }
+    },
+    toString() {
+      return tail.text();
+    },
+    signals(): ChromeLaunchStderrSignals {
+      return { ...signals };
+    },
+    clear() {
+      tail.clear();
+      signals.singletonInUse = false;
+      signals.missingDisplay = false;
+      markerScanTail = "";
+    },
+  };
+}
 
 type ChromeSingletonLock =
   | { status: "missing" }
@@ -867,8 +908,6 @@ async function launchOpenClawChromeLocked(
       proc = spawned.proc;
       releaseSpawnAbort = spawned.releaseAbort;
       const hasExited = () => spawned.proc.exitCode != null || spawned.proc.signalCode != null;
-      const exitDiagnostic = () =>
-        `Chrome process exited before CDP became ready (code ${spawned.proc.exitCode}, signal ${spawned.proc.signalCode}).`;
       const readyDeadline = Date.now() + resolved.localLaunchTimeoutMs;
       let launchHttpReachable = false;
       // Full CDP WebSocket readiness is handled by the caller's
@@ -932,7 +971,7 @@ async function launchOpenClawChromeLocked(
           }
           signal?.throwIfAborted();
           finalDiagnostic = null;
-          diagnosticErrorText = exitDiagnostic();
+          diagnosticErrorText = `Chrome process exited before CDP became ready (code ${spawned.proc.exitCode}, signal ${spawned.proc.signalCode}).`;
         } else if (
           finalDiagnostic &&
           (finalDiagnostic.ok || !CHROME_HTTP_DISCOVERY_FAILURE_CODES.has(finalDiagnostic.code))

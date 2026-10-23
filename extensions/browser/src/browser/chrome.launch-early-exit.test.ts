@@ -30,15 +30,14 @@ vi.mock("./cdp-proxy-bypass.js", () => ({
   assertManagedProxyAllowsCdpUrl: vi.fn(),
 }));
 vi.mock("./chrome.executables.js", () => ({
+  assertBrowserExecutableSupportsLaunch: vi.fn(),
+  processCommandUsesHeadlessChrome: () => false,
   resolveBrowserExecutableForPlatform: () => ({ kind: "custom", path: "/synthetic/chrome" }),
 }));
 vi.mock("./output-directories.js", () => ({ ensureOutputDirectory: vi.fn() }));
 vi.mock("./chrome.profile-decoration.js", () => ({
-  isProfileDecorated: () => true,
   usesOpenClawMockKeychain: () => false,
-  ensureProfileCleanExit: vi.fn(),
-  ensureProfileNetworkPredictionDisabled: vi.fn(),
-  decorateOpenClawProfile: vi.fn(),
+  prepareOpenClawProfile: vi.fn(),
 }));
 
 import { launchOpenClawChrome, ManagedChromeCleanupError } from "./chrome.js";
@@ -62,14 +61,17 @@ const resolved = {
   ...resolveBrowserConfig({ headless: true, noSandbox: true, extraArgs: [] }),
   localLaunchTimeoutMs: 15_000,
 };
-const profile = {
+const profile: ResolvedBrowserProfile = {
   name: "synthetic-early-exit",
   cdpPort: 51114,
   cdpUrl: "http://127.0.0.1:51114",
+  cdpHost: "127.0.0.1",
   cdpIsLoopback: true,
+  driver: "openclaw",
+  attachOnly: false,
   headless: true,
   color: "#FF4500",
-} as ResolvedBrowserProfile;
+};
 const readyVersion = { webSocketDebuggerUrl: "ws://127.0.0.1:51114/devtools/browser/fixture" };
 
 beforeEach(() => {
