@@ -177,6 +177,7 @@ describe("managed Chrome early child exit", () => {
     void outcome.then(() => {
       settled = true;
     });
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
     await vi.advanceTimersByTimeAsync(1_000);
     const settledPromptly = settled;
     // Drain the original implementation too, so the RED replay leaves no timer behind.
