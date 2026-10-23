@@ -54,21 +54,28 @@ vi.mock("./cdp.helpers.js", async (importOriginal) => ({
   ...(await importOriginal<typeof CdpHelpers>()),
   assertCdpEndpointAllowed: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./cdp-proxy-bypass.js", () => ({
+vi.mock("./cdp-proxy-bypass.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./cdp-proxy-bypass.js")>()),
   assertManagedProxyAllowsCdpUrl: vi.fn(),
 }));
-vi.mock("./chrome.executables.js", () => ({
+vi.mock("./chrome.executables.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chrome.executables.js")>()),
   assertBrowserExecutableSupportsLaunch: vi.fn(),
   processCommandUsesHeadlessChrome: () => false,
   resolveBrowserExecutableForPlatform: () => ({ kind: "custom", path: "/synthetic/chrome" }),
 }));
-vi.mock("./output-directories.js", () => ({ ensureOutputDirectory: vi.fn() }));
-vi.mock("./chrome.profile-decoration.js", () => ({
+vi.mock("./output-directories.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./output-directories.js")>()),
+  ensureOutputDirectory: vi.fn(),
+}));
+vi.mock("./chrome.profile-decoration.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chrome.profile-decoration.js")>()),
   usesOpenClawMockKeychain: () => false,
   prepareOpenClawProfile: vi.fn(),
 }));
 // Keep process-discovery timing independent of cross-process profile-lock I/O.
-vi.mock("./chrome.profile-lifecycle-lock.js", () => ({
+vi.mock("./chrome.profile-lifecycle-lock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chrome.profile-lifecycle-lock.js")>()),
   withChromeProfileLifecycleLock: <T>(_profile: string, run: () => Promise<T>) => run(),
 }));
 
