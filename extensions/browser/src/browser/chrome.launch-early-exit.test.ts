@@ -67,6 +67,10 @@ vi.mock("./chrome.profile-decoration.js", () => ({
   usesOpenClawMockKeychain: () => false,
   prepareOpenClawProfile: vi.fn(),
 }));
+// Keep process-discovery timing independent of cross-process profile-lock I/O.
+vi.mock("./chrome.profile-lifecycle-lock.js", () => ({
+  withChromeProfileLifecycleLock: <T>(_profile: string, run: () => Promise<T>) => run(),
+}));
 
 import { launchOpenClawChrome, ManagedChromeCleanupError } from "./chrome.js";
 
