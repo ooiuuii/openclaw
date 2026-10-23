@@ -125,6 +125,23 @@ it("does not let another question claim an unrelated control's key", async () =>
   expect(document.activeElement).toBe(composer);
 });
 
+it("routes numeric typing on a question link to the composer", async () => {
+  const { panel, composer, props } = await mountQuestion();
+  panel.props = {
+    ...props,
+    model: {
+      ...props.model,
+      questions: [{ ...props.model.questions[0]!, url: "https://example.test/confirm" }],
+    },
+  };
+  await panel.updateComplete;
+  const link = panel.querySelector<HTMLAnchorElement>("a[href]")!;
+  const event = press(link, "2");
+  expect(document.activeElement).toBe(composer);
+  expect(event.defaultPrevented).toBe(false);
+  expect([...props.model.drafts.get("format")!.selected]).toEqual(["Compact"]);
+});
+
 it("restores collapse-button focus and stops claiming collapsed shortcuts", async () => {
   const { panel, composer } = await mountQuestion();
   panel.querySelector<HTMLButtonElement>(".chat-question-panel__collapse")!.click();

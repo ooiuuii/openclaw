@@ -196,7 +196,8 @@ function keyboardEventPathHasInteractiveTarget(event: KeyboardEvent): boolean {
         (target.matches("dialog[open], [aria-modal='true']") ||
           target.matches(CHAT_PRINTABLE_KEY_TARGET_SELECTOR) ||
           menuOwnsShortcut(target, event.key) ||
-          questionOwnsNumericShortcut(target, event.key) ||
+          (!(event.target instanceof HTMLAnchorElement) &&
+            questionOwnsNumericShortcut(target, event.key)) ||
           (event.key === " " && target.matches(CHAT_SPACE_ACTIVATION_SELECTOR))),
     );
 }
