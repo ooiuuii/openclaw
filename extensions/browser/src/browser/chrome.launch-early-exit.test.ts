@@ -137,6 +137,7 @@ describe("managed Chrome early child exit", () => {
     const outcome = launchOpenClawChrome(resolved, profile, { signal: controller.signal }).catch(
       (error: unknown) => error,
     );
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
     await vi.runAllTimersAsync();
     expect(await outcome).toBe(reason);
     expect(proc.stderr.listenerCount("data")).toBe(0);
