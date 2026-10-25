@@ -16,7 +16,11 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
-import { releaseOpenClawStateLease } from "./openclaw-state-lease-storage.js";
+import {
+  releaseOpenClawStateLease,
+  renewOpenClawStateLease,
+  verifyOpenClawStateLeaseOwnership,
+} from "./openclaw-state-lease-storage.js";
 import {
   acquireOpenClawStateLeaseInTransaction,
   readOpenClawStateLease,
@@ -37,6 +41,85 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
+
+const leaseLossCases = [
+  {
+    loss: "expired",
+    mutate: (db: DatabaseSync, now: number) =>
+      db
+        .prepare("UPDATE state_leases SET expires_at = ?, heartbeat_at = ?")
+        .run(now - 1_000, now - 2_000),
+    detail: "lease expired 1000 ms ago; last heartbeat 2000 ms ago",
+  },
+  {
+    loss: "replaced",
+    mutate: (db: DatabaseSync, _now: number) =>
+      db.prepare("UPDATE state_leases SET owner = ?").run("replacement-owner"),
+    detail: "lease owner was replaced",
+  },
+  {
+    loss: "missing",
+    mutate: (db: DatabaseSync, _now: number) => db.prepare("DELETE FROM state_leases").run(),
+    detail: "lease record is missing",
+  },
+] as const;
+
+function lostLeaseFixture(mutate: (db: DatabaseSync, now: number) => unknown) {
+  const env = { OPENCLAW_STATE_DIR: dirs.make("lease-loss-diagnostics-") };
+  const database = openOpenClawStateDatabase({ env });
+  const native = requireNativeSqliteDatabase(database.db);
+  const identity = {
+    scope: "synthetic",
+    key: "diagnostics",
+    owner: "original-owner",
+  };
+  runOpenClawStateWriteTransaction(
+    ({ db }) => acquireOpenClawStateLeaseInTransaction(db, identity, 30_000),
+    { env, database },
+  );
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  mutate(native, now);
+  return { env, database, identity };
+}
+
+it.each(leaseLossCases)(
+  "reports why a native lease renewal failed ($loss)",
+  async ({ mutate, detail }) => {
+    const { env, database, identity } = lostLeaseFixture(mutate);
+    try {
+      expect(() =>
+        renewOpenClawStateLease({
+          ...identity,
+          leaseLabel: "state lease",
+          operationLabel: "test.lease.renew",
+          database: { scope: "shared", options: { env, database } },
+          leaseMs: 30_000,
+        }),
+      ).toThrow(`state lease synthetic/diagnostics was lost (${detail})`);
+    } finally {
+      await closeOpenClawStateDatabaseAsync();
+    }
+  },
+);
+
+it.each(leaseLossCases)(
+  "reports why a native lease verification failed ($loss)",
+  async ({ mutate, detail }) => {
+    const { env, database, identity } = lostLeaseFixture(mutate);
+    try {
+      expect(() =>
+        verifyOpenClawStateLeaseOwnership({
+          ...identity,
+          leaseLabel: "state lease",
+          database: { scope: "shared", options: { env, database } },
+        }),
+      ).toThrow(`state lease synthetic/diagnostics was lost (${detail})`);
+    } finally {
+      await closeOpenClawStateDatabaseAsync();
+    }
+  },
+);
 
 function leaseFixture(beforeCommit = () => {}) {
   const env = { OPENCLAW_STATE_DIR: dirs.make("lease-diagnostics-") };

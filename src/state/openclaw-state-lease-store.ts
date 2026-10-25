@@ -14,6 +14,7 @@ import type { DB } from "./openclaw-state-db.generated.js";
 import type {
   OpenClawStateLeaseIdentity,
   OpenClawStateLeaseAcquisition,
+  OpenClawStateLeaseLossReason,
 } from "./openclaw-state-lease.types.js";
 
 type LeaseDatabase = Pick<DB, "state_leases">;
@@ -139,6 +140,32 @@ export function readOpenClawStateLeaseExpiry(
       .where("expires_at", ">", nowMs ?? Date.now())
       .$narrowType<{ expires_at: number }>(),
   )?.expires_at;
+}
+
+/** Explain a failed ownership check without exposing the replacement owner's token. */
+export function readOpenClawStateLeaseLossReason(
+  db: EngineConnection,
+  identity: OpenClawStateLeaseIdentity,
+  nowMs = Date.now(),
+): OpenClawStateLeaseLossReason | undefined {
+  const lease = readOpenClawStateLease(db, identity);
+  if (!lease) {
+    return { kind: "missing" };
+  }
+  if (lease.owner !== identity.owner) {
+    return { kind: "replaced" };
+  }
+  if (lease.expiresAt === null || lease.heartbeatAt === null) {
+    return undefined;
+  }
+  if (lease.expiresAt <= nowMs) {
+    return {
+      kind: "expired",
+      expiredAgoMs: Math.max(0, nowMs - lease.expiresAt),
+      lastHeartbeatAgoMs: Math.max(0, nowMs - lease.heartbeatAt),
+    };
+  }
+  return undefined;
 }
 
 function repairMissingProcessStartTime(

@@ -1,3 +1,5 @@
+import type { OpenClawStateLeaseLossReason } from "./openclaw-state-lease.types.js";
+
 export type OpenClawStateLeaseErrorCode =
   | "OPENCLAW_STATE_LEASE_INVALID_INPUT"
   | "OPENCLAW_STATE_LEASE_HELD"
@@ -68,10 +70,19 @@ export function createOpenClawStateLeaseError(
 export function createOpenClawStateLeaseLostError(
   identity: { scope: string; key: string; leaseLabel?: string },
   cause?: unknown,
+  reason?: OpenClawStateLeaseLossReason,
 ): OpenClawStateLeaseError {
+  const detail =
+    reason?.kind === "expired"
+      ? `lease expired ${reason.expiredAgoMs} ms ago; last heartbeat ${reason.lastHeartbeatAgoMs} ms ago`
+      : reason?.kind === "replaced"
+        ? "lease owner was replaced"
+        : reason?.kind === "missing"
+          ? "lease record is missing"
+          : undefined;
   return createOpenClawStateLeaseError(
     "OPENCLAW_STATE_LEASE_LOST",
-    `${identity.leaseLabel ?? "state lease"} ${identity.scope}/${identity.key} was lost`,
+    `${identity.leaseLabel ?? "state lease"} ${identity.scope}/${identity.key} was lost${detail ? ` (${detail})` : ""}`,
     cause,
   );
 }

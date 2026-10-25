@@ -26,6 +26,7 @@ import {
 } from "./openclaw-state-lease-heartbeat-shared.js";
 import {
   readOpenClawStateLeaseExpiry,
+  readOpenClawStateLeaseLossReason,
   releaseOpenClawStateLeaseInTransaction,
   renewOpenClawStateLeaseInTransaction,
 } from "./openclaw-state-lease-store.js";
@@ -122,9 +123,20 @@ export function renewOpenClawStateLease(
     params.database,
     params.operationLabel === "state.lease" ? "state.lease.renew" : params.operationLabel,
     (db) => {
-      const expiresAt = renewOpenClawStateLeaseInTransaction(db, params, params.leaseMs);
+      const now = Date.now();
+      const expiresAt = renewOpenClawStateLeaseInTransaction(
+        db,
+        params,
+        params.leaseMs,
+        undefined,
+        now,
+      );
       if (expiresAt === undefined) {
-        throw createOpenClawStateLeaseLostError(params);
+        throw createOpenClawStateLeaseLostError(
+          params,
+          undefined,
+          readOpenClawStateLeaseLossReason(db, params, now),
+        );
       }
       return expiresAt;
     },
@@ -135,9 +147,14 @@ function assertOpenClawStateLeaseOwnedInDatabase(
   database: EngineConnection,
   params: OpenClawStateLeaseOwnerIdentity,
 ): number {
-  const expiresAt = readOpenClawStateLeaseExpiry(database, params);
+  const now = Date.now();
+  const expiresAt = readOpenClawStateLeaseExpiry(database, params, now);
   if (expiresAt === undefined) {
-    throw createOpenClawStateLeaseLostError(params);
+    throw createOpenClawStateLeaseLostError(
+      params,
+      undefined,
+      readOpenClawStateLeaseLossReason(database, params, now),
+    );
   }
   return expiresAt;
 }
