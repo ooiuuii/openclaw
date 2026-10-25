@@ -40,8 +40,17 @@ it.each(["renewed", "replaced", "expired", "refused"] as const)(
     db.exec(`
       PRAGMA journal_mode=WAL;
       PRAGMA wal_autocheckpoint=0;
-      CREATE TABLE state_leases(scope TEXT, lease_key TEXT, owner TEXT, expires_at INTEGER);
-      INSERT INTO state_leases VALUES ('synthetic', 'verify', 'original', 20000);
+      CREATE TABLE state_leases(
+        scope TEXT,
+        lease_key TEXT,
+        owner TEXT,
+        expires_at INTEGER,
+        heartbeat_at INTEGER,
+        created_at INTEGER,
+        payload_json TEXT
+      );
+      INSERT INTO state_leases
+        VALUES ('synthetic', 'verify', 'original', 20000, 10000, 10000, NULL);
     `);
     peer.exec("PRAGMA busy_timeout=0");
     let checkpoint: unknown;

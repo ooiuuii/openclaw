@@ -25,17 +25,26 @@ afterEach(() => {
 function fixture() {
   const db = new DatabaseSync(":memory:");
   databases.push(db);
-  db.exec(
-    "CREATE TABLE state_leases (scope TEXT, lease_key TEXT, owner TEXT, expires_at INTEGER); CREATE TABLE writes (value TEXT)",
-  );
+  db.exec(`
+    CREATE TABLE state_leases (
+      scope TEXT,
+      lease_key TEXT,
+      owner TEXT,
+      expires_at INTEGER,
+      heartbeat_at INTEGER,
+      created_at INTEGER,
+      payload_json TEXT
+    );
+    CREATE TABLE writes (value TEXT);
+  `);
   const identities: [OpenClawStateLeaseIdentity, OpenClawStateLeaseIdentity] = [
     { scope: "skill-collection", key: "main", owner: "collection-owner" },
     { scope: "skill-workshop-target", key: "main:target", owner: "target-owner" },
   ];
   const expiresAt = Date.now() + 30_000;
-  const insert = db.prepare("INSERT INTO state_leases VALUES (?, ?, ?, ?)");
+  const insert = db.prepare("INSERT INTO state_leases VALUES (?, ?, ?, ?, ?, ?, NULL)");
   for (const identity of identities) {
-    insert.run(identity.scope, identity.key, identity.owner, expiresAt);
+    insert.run(identity.scope, identity.key, identity.owner, expiresAt, Date.now(), Date.now());
   }
   return { db, identities, expiresAt };
 }
