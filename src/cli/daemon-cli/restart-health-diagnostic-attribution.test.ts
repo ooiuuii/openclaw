@@ -101,7 +101,7 @@ describe("read-only Windows diagnostics with unavailable process metadata", () =
     },
     { name: "startup cannot be hidden", startup: true, healthy: false, calls: 0 },
   ] as const)("$name", async (scenario) => {
-    if ("platform" in scenario) {
+    if ("platform" in scenario && scenario.platform !== undefined) {
       vi.spyOn(process, "platform", "get").mockReturnValue(scenario.platform);
     }
     mocks.inspectPortUsage.mockResolvedValue({
