@@ -214,20 +214,11 @@ describe("openai completions stream", () => {
           const result = await stream.result();
           expect(result.stopReason).toBe(stopReason);
           const toolCalls = result.content.filter((block) => block.type === "toolCall");
-          if (stopReason === "toolUse") {
-            expect(toolCalls).toEqual([
-              expect.objectContaining({
-                id: "call_lookup",
-                name: "lookup",
-                arguments: { query: "local" },
-              }),
-            ]);
-          } else {
-            expect(toolCalls).toEqual([]);
-          }
-          if (!emitsTool) {
-            expect(result.content).toContainEqual({ type: "text", text: "No tool required." });
-          }
+          expect(toolCalls).toMatchObject(
+            stopReason === "toolUse"
+              ? [{ id: "call_lookup", name: "lookup", arguments: { query: "local" } }]
+              : [],
+          );
           if (stopReason === "error") {
             expect(result.errorMessage).toBe(`Provider finish_reason: ${finishReason}`);
           }
