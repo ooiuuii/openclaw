@@ -80,17 +80,24 @@ async function runResponse({
   }
 }
 
-it.each(["SSE", "JSON", "cloned SSE"] as const)(
-  "rejects capped %s candidates without text or tools",
-  async (format) => {
+it.each([
+  ["SSE", "length"],
+  ["JSON", "length"],
+  ["cloned SSE", "length"],
+  ["SSE", "MAX_TOKENS"],
+] as const)(
+  "rejects capped %s %s candidates without text or tools",
+  async (format, finishReason) => {
     const { result, request, events, onResponse } = await runResponse({
-      chunks: [chunk(candidate), chunk({}, "length", { usage })],
+      chunks: [chunk(candidate), chunk({}, finishReason, { usage })],
       options: format === "cloned SSE" ? { onPayload: (payload) => structuredClone(payload) } : {},
       model: { params: { streaming: format !== "JSON" } },
       response:
         format === "JSON"
           ? Response.json({
-              choices: [{ message: { role: "assistant", ...candidate }, finish_reason: "length" }],
+              choices: [
+                { message: { role: "assistant", ...candidate }, finish_reason: finishReason },
+              ],
               usage,
             })
           : undefined,

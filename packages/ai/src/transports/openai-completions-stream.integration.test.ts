@@ -186,6 +186,9 @@ describe("openai completions stream", () => {
     { finishReason: "tool_calls", emitsTool: true, stopReason: "toolUse" },
     { finishReason: "function_call", emitsTool: true, stopReason: "toolUse" },
     { finishReason: "unknown", emitsTool: true, stopReason: "error" },
+    { finishReason: "STOP", emitsTool: false, stopReason: "stop" },
+    { finishReason: "MAX_TOKENS", emitsTool: false, stopReason: "length" },
+    { finishReason: "SAFETY", emitsTool: false, stopReason: "error" },
   ])(
     "handles $finishReason with emitsTool=$emitsTool through the public LLM runtime",
     async ({ finishReason, emitsTool, stopReason }) => {
@@ -222,8 +225,11 @@ describe("openai completions stream", () => {
           } else {
             expect(toolCalls).toEqual([]);
           }
-          if (finishReason === "unknown") {
-            expect(result.errorMessage).toBe("Provider finish_reason: unknown");
+          if (!emitsTool) {
+            expect(result.content).toContainEqual({ type: "text", text: "No tool required." });
+          }
+          if (stopReason === "error") {
+            expect(result.errorMessage).toBe(`Provider finish_reason: ${finishReason}`);
           }
         },
       );
