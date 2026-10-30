@@ -17,12 +17,14 @@ import {
   type ProviderStreamOptions,
 } from "../packages/ai/src/provider-types.js";
 import { createOperationalRunInstanceRef } from "../src/agents/admitted-run-context.js";
+import { classifyAssistantFailoverReason } from "../src/agents/embedded-agent-helpers/assistant-message-failures.js";
 import {
   testing as extraParamsTesting,
   type WrapProviderStreamFnParams,
 } from "../src/agents/embedded-agent-runner/extra-params.test-support.js";
 import { createModelGenerationFixture } from "../src/agents/embedded-agent-runner/model.generation-scope.test-support.js";
 import { prepareEmbeddedAttemptTransport } from "../src/agents/embedded-agent-runner/run/attempt-stream-settle.js";
+import { createRetryController } from "../src/agents/embedded-agent-runner/run/failover-retry-controller.test-support.js";
 import { setPreparedModelFullCatalogAuth } from "../src/agents/prepared-model-runtime-auth.js";
 import { createPreparedAccountCatalogAccess } from "../src/agents/prepared-model-runtime.catalog-auth.js";
 import type { StreamFn } from "../src/agents/runtime/index.js";
@@ -31,6 +33,7 @@ import {
   makeAgentAssistantMessage,
 } from "../src/agents/test-helpers/agent-message-fixtures.js";
 import "../src/agents/ai-transport-runtime-host.js";
+import * as backoff from "../src/infra/backoff.js";
 import { bindStreamLlmRuntime } from "../src/llm/model-runtime-binding.js";
 import { createCodexNativeWebSearchWrapper } from "../src/llm/providers/stream-wrappers/openai.js";
 import { createAssistantMessageEventStream } from "../src/llm/utils/event-stream.js";
@@ -175,6 +178,87 @@ describe("prepareEmbeddedAttemptTransport", () => {
   afterEach(() => {
     extraParamsTesting.resetProviderRuntimeDepsForTest();
     registerProviderStreamForModel.mockReset();
+  });
+
+  it.each(
+    [
+      "credit_balance_exhausted",
+      "organization_spend_limit_exceeded",
+      "organization_usage_limit_exceeded",
+      "project_spend_limit_exceeded",
+    ].flatMap((code) => (["sse", "http"] as const).map((transport) => ({ code, transport }))),
+  )("does not short-retry OpenAI $code from $transport", async ({ code, transport }) => {
+    const { buildOpenAIProvider } = await import("../extensions/openai/api.js");
+    const provider = buildOpenAIProvider();
+    const { input, session } = createTransportFixture({ apiKey: "synthetic-key" });
+    const model = {
+      ...anthropicModel,
+      api: "openai-responses" as const,
+      provider: "openai",
+      id: "gpt-5.6-luna",
+      baseUrl: "https://api.openai.com/v1",
+    };
+    Object.assign(input.attempt, { model, modelId: model.id, provider: model.provider });
+    input.getProviderRuntimeHandle = () => ({
+      provider: provider.id,
+      modelId: model.id,
+      plugin: provider,
+    });
+    extraParamsTesting.setProviderRuntimeDepsForTest({
+      wrapProviderStreamFn: ({ context }) => provider.wrapStreamFn?.(context),
+    });
+    registerProviderStreamForModel.mockReturnValue(createOpenAIResponsesTransportStreamFn());
+    const previousHost = getAiTransportHost();
+    const fetchResponse = vi.fn<typeof fetch>(async () => {
+      // Neither prose nor a billing type can supply the missing code classification.
+      const error = { code, message: "Request rejected" };
+      return transport === "http"
+        ? new Response(JSON.stringify({ error }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(
+            `event: error\ndata: ${JSON.stringify({
+              type: "error",
+              ...error,
+              param: null,
+              sequence_number: 1,
+            })}\n\n`,
+            { headers: { "content-type": "text/event-stream" } },
+          );
+    });
+    configureAiTransportHost({ ...previousHost, buildModelFetch: () => fetchResponse });
+    const sleep = vi.spyOn(backoff, "sleepWithAbort").mockResolvedValue(undefined);
+    const onRetry = vi.fn();
+    try {
+      await prepareEmbeddedAttemptTransport(input);
+      const stream = await session.agent.streamFn(
+        model,
+        { messages: [{ role: "user", content: "Hello", timestamp: 0 }] },
+        {},
+      );
+      const result = await stream.result();
+      expect(result).toMatchObject({ stopReason: "error", errorCode: code, content: [] });
+      expect(result.errorBody).toContain(code);
+      expect(fetchResponse).toHaveBeenCalledOnce();
+
+      const reason = classifyAssistantFailoverReason(result, { providerOwner: provider });
+      const retried =
+        reason === null
+          ? undefined
+          : await createRetryController().maybeRetryTransient({
+              reason,
+              code: result.errorCode,
+              message: result.errorMessage,
+              onRetry,
+            });
+      expect({ reason, retried }).toEqual({ reason: "billing", retried: false });
+      expect(sleep).not.toHaveBeenCalled();
+      expect(onRetry).not.toHaveBeenCalled();
+    } finally {
+      sleep.mockRestore();
+      configureAiTransportHost(previousHost);
+    }
   });
 
   it.each(

@@ -14,6 +14,10 @@ export function registerOpenAIFailoverTests() {
         ["CONTENT_FILTER", "format"],
         ["USAGE_LIMIT_REACHED", "rate_limit"],
         ["USAGE_NOT_INCLUDED", "billing"],
+        ["CREDIT_BALANCE_EXHAUSTED", "billing"],
+        ["ORGANIZATION_SPEND_LIMIT_EXCEEDED", "billing"],
+        ["ORGANIZATION_USAGE_LIMIT_EXCEEDED", "billing"],
+        ["PROJECT_SPEND_LIMIT_EXCEEDED", "billing"],
       ]) {
         expect(
           provider.classifyFailoverReason?.({
